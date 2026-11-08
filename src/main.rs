@@ -248,8 +248,30 @@ fn handle(mut s: TcpStream, cfg: &Cfg, st: &Mutex<State>) {
     if method != "GET" && method != "HEAD" {
         return respond(&mut s, "405 Method Not Allowed", "text/plain", b"GET only\n");
     }
-    let (path, q) = target.split_once('?').unwrap_or((target, ""));
+    let (mut path, q) = target.split_once('?').unwrap_or((target, ""));
     const JSON: &str = "application/json";
+    // /peer/<i>/api/... : served locally if peer i is this node, otherwise relayed to the
+    // configured peer URL (lets the browser reach nodes it has no route to, e.g. node2
+    // behind node1). Only configured peers and /api/ paths: not an open proxy.
+    if let Some(rest) = path.strip_prefix("/peer/") {
+        let (idx, sub) = rest.split_once('/').unwrap_or((rest, ""));
+        let sub_path = &path[path.len() - sub.len() - 1..];
+        let Some((pname, purl)) = idx.parse::<usize>().ok().and_then(|i| cfg.peers.get(i)) else {
+            return respond(&mut s, "404 Not Found", "text/plain", b"no such peer\n");
+        };
+        if !sub_path.starts_with("/api/") {
+            return respond(&mut s, "404 Not Found", "text/plain", b"not found\n");
+        }
+        if *pname == cfg.name {
+            path = sub_path;
+        } else {
+            let tgt = if q.is_empty() { sub_path.to_string() } else { format!("{sub_path}?{q}") };
+            return match http_get(purl, &tgt) {
+                Some(body) => respond(&mut s, "200 OK", JSON, &body),
+                None => respond(&mut s, "502 Bad Gateway", "text/plain", b"peer unreachable\n"),
+            };
+        }
+    }
     match path {
         "/" | "/index.html" => respond(&mut s, "200 OK", "text/html; charset=utf-8", INDEX.as_bytes()),
         "/api/info" => respond(&mut s, "200 OK", JSON, info_json(cfg).as_bytes()),
@@ -282,6 +304,25 @@ fn handle(mut s: TcpStream, cfg: &Cfg, st: &Mutex<State>) {
         }
         _ => respond(&mut s, "404 Not Found", "text/plain", b"not found\n"),
     }
+}
+
+/// Minimal HTTP/1.0 GET to http://host:port, returns body of a 200 response.
+fn http_get(base: &str, path: &str) -> Option<Vec<u8>> {
+    use std::net::ToSocketAddrs;
+    let hostport = base.strip_prefix("http://")?.split('/').next()?;
+    let addr = if hostport.contains(':') { hostport.to_string() } else { format!("{hostport}:80") };
+    let sa = addr.to_socket_addrs().ok()?.next()?;
+    let mut c = TcpStream::connect_timeout(&sa, Duration::from_secs(2)).ok()?;
+    let _ = c.set_read_timeout(Some(Duration::from_secs(8)));
+    let _ = c.set_write_timeout(Some(Duration::from_secs(3)));
+    c.write_all(format!("GET {path} HTTP/1.0\r\nHost: {hostport}\r\nConnection: close\r\n\r\n").as_bytes()).ok()?;
+    let mut buf = Vec::with_capacity(16 * 1024);
+    c.take(8 << 20).read_to_end(&mut buf).ok()?;
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    if !buf.starts_with(b"HTTP/1.1 200") && !buf.starts_with(b"HTTP/1.0 200") {
+        return None;
+    }
+    Some(buf.split_off(end + 4))
 }
 
 fn main() {

@@ -131,7 +131,7 @@ const nodes=[];
 function tile(k,color){return`<div class="tile"><div class="k">${color?`<span class="sw" style="background:var(${color})"></span>`:""}${k}</div><div class="v">–</div><div class="s">&nbsp;</div><div class="bar"><i style="width:0;background:var(${color||"--mute"})"></i></div></div>`}
 function addNode(name,url){
   const el=document.createElement("section");el.className="card";
-  el.innerHTML=`<div class="top"><span class="dot"></span><b>${esc(name)}</b><span class="mute url">${esc(url||location.host)}</span><span class="sp"></span><span class="mute meta"></span></div>
+  el.innerHTML=`<div class="top"><span class="dot"></span><b>${esc(name)}</b><span class="mute url">${esc((url||location.host).replace(/^https?:\/\//,""))}</span><span class="sp"></span><span class="mute meta"></span></div>
   <div class="tiles">${tile("CPU","--cpu")}${tile("GPU","--gpu")}${tile("RAM","--ram")}${tile("GTT","--gtt")}${tile("VRAM","--vram")}${tile("Swap","--swap")}${tile("온도 / 전력","")}</div>
   <div class="cores" title="코어별 CPU 사용률"></div>
   <div class="lg"><span><i class="sw" style="background:var(--cpu)"></i>CPU</span><span><i class="sw" style="background:var(--gpu)"></i>GPU</span><span class="mute">점선 = 구간 최대</span></div>
@@ -162,7 +162,7 @@ function setDot(n,ok,msg){const d=$(".dot",n.el);d.className="dot "+(ok?"ok":"ba
 
 async function loadNow(n){
   try{
-    const d=await get(n.url+"/api/now");n.now=d;setDot(n,true);
+    const d=await get(n.url+(n.url?"/":"")+"api/now");n.now=d;setDot(n,true);
     const[cpu,gpu,ram,gtt,vram,sw,tp]=n.tiles;
     setTile(cpu,d.cpu.toFixed(0)+"%",`load ${d.load[0].toFixed(2)} / ${d.load[1].toFixed(2)}`,d.cpu);
     setTile(gpu,d.gpu==null?"N/A":d.gpu.toFixed(0)+"%",d.sclk?d.sclk+" MHz":"",d.gpu);
@@ -179,14 +179,14 @@ async function loadNow(n){
 }
 async function loadHist(n){
   try{
-    const h=await get(`${n.url}/api/hist?sec=${range}&n=${Math.min(900,Math.max(200,Math.round(n.el.clientWidth)))}`,8000);
+    const h=await get(`${n.url}${n.url?"/":""}api/hist?sec=${range}&n=${Math.min(900,Math.max(200,Math.round(n.el.clientWidth)))}`,8000);
     const to=Date.now()/1000,from=to-range;
     for(const c of[n.c1,n.c2]){c.h=h;c.from=from;c.to=to;drawChart(c)}
   }catch(e){}
 }
 async function loadProcs(n){
   if(n.busy||n.paused||document.hidden)return;n.busy=true;
-  try{const d=await get(n.url+"/api/procs?n=400",8000);n.procs=d.procs;n.total=d.total;renderProcs(n)}catch(e){$(".pcount",n.el).innerHTML='<span class="err">불러오기 실패</span>'}
+  try{const d=await get(n.url+(n.url?"/":"")+"api/procs?n=400",8000);n.procs=d.procs;n.total=d.total;renderProcs(n)}catch(e){$(".pcount",n.el).innerHTML='<span class="err">불러오기 실패</span>'}
   n.busy=false;
 }
 function renderProcs(n){
@@ -204,7 +204,7 @@ function renderProcs(n){
 (async()=>{
   let info;try{info=await get("api/info")}catch(e){info={name:location.host,peers:[]}}
   const peers=info.peers&&info.peers.length?info.peers:[{name:info.name,url:""}];
-  for(const p of peers)addNode(p.name,p.url);
+  peers.forEach((p,i)=>{const n=addNode(p.name,p.url);if(info.peers&&info.peers.length)n.url="peer/"+i});
   $("#foot").textContent=`bc250mon ${info.version||""} · 기록: 2초 간격 1시간 + 1분 평균 ${info.days||"?"}일 · GTT = GPU가 시스템 RAM에서 할당한 메모리`;
   const tickNow=()=>nodes.forEach(loadNow);
   const tickHist=()=>nodes.forEach(loadHist);
