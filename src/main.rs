@@ -32,6 +32,7 @@ struct Now {
     cores: Vec<u8>,
     cpu_clocks: Arc<Vec<(u32, u32)>>,
     network: Arc<Vec<sys::NetInterface>>,
+    vrm: Option<sys::Vrm>,
     gpu: Option<f32>,
     gpu_source: Option<&'static str>,
     gpu_cu: Option<u32>,
@@ -117,7 +118,8 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>,
     let mut engines = None;
     let mut network = Arc::new(Vec::new());
     let mut network_at = Instant::now();
-    let mut link_at = None;
+    let mut slow_sample_at = None;
+    let mut vrm = None;
     let mut clocks = Arc::new(Vec::new());
     let mut clocks_at = None;
     loop {
@@ -148,11 +150,12 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>,
         let cores: Vec<u8> = cur.iter().skip(1).zip(prev.iter().skip(1)).map(|(b, a)| sys::pct(*a, *b).round() as u8).collect();
         prev = cur;
         let sampled_at = Instant::now();
-        let refresh_links = link_at.is_none_or(|at| sampled_at.duration_since(at) >= Duration::from_secs(10));
-        network = Arc::new(sys::network_stats(&network, sampled_at.duration_since(network_at), refresh_links));
+        let refresh_slow_sensors = slow_sample_at.is_none_or(|at| sampled_at.duration_since(at) >= Duration::from_secs(10));
+        network = Arc::new(sys::network_stats(&network, sampled_at.duration_since(network_at), refresh_slow_sensors));
         network_at = sampled_at;
-        if refresh_links {
-            link_at = Some(sampled_at);
+        if refresh_slow_sensors {
+            vrm = sys::vrm_stats();
+            slow_sample_at = Some(sampled_at);
         }
         if clocks_at.is_none_or(|at| sampled_at.duration_since(at) >= Duration::from_secs(4)) {
             clocks = Arc::new(sys::cpu_clocks());
@@ -165,6 +168,7 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>,
             cores,
             cpu_clocks: Arc::clone(&clocks),
             network: Arc::clone(&network),
+            vrm,
             gpu: metrics.or_else(|| if gn > 0 { Some(gsum as f32 / gn as f32) } else { estimate }),
             gpu_source: if metrics.is_some() { Some("gpu_metrics") }
                 else if gn > 0 { Some("sysfs") }
@@ -210,6 +214,15 @@ fn opt<T: std::fmt::Display>(v: Option<T>) -> String {
     v.map(|x| x.to_string()).unwrap_or_else(|| "null".into())
 }
 
+fn vrm_json(vrm: Option<sys::Vrm>) -> String {
+    let Some(vrm) = vrm else { return "null".into() };
+    let rail = |rail: sys::VrmRail| format!(
+        "{{\"mV\":{},\"mA\":{},\"mC\":{},\"uW\":{}}}",
+        opt(rail.mv), opt(rail.ma), opt(rail.milli_c), opt(rail.power_uw())
+    );
+    format!("{{\"vinMv\":{},\"cpu\":{},\"gpu\":{}}}", opt(vrm.vin_mv), rail(vrm.cpu), rail(vrm.gpu))
+}
+
 fn now_json(cfg: &Cfg, n: &Now) -> String {
     let pair = |p: Option<(u64, u64)>| p.map(|(t, u)| format!("{{\"total\":{t},\"used\":{u}}}")).unwrap_or_else(|| "null".into());
     let mut name = String::new();
@@ -240,11 +253,11 @@ fn now_json(cfg: &Cfg, n: &Now) -> String {
         let _ = write!(clocks, "[{id},{mhz}]");
     }
     format!(
-        "{{\"name\":{name},\"ts\":{},\"uptime\":{},\"load\":[{:.2},{:.2},{:.2}],\"cpu\":{:.1},\"cores\":{:?},\"cpuClocks\":[{clocks}],\"network\":[{network}],\"gpu\":{},\
+        "{{\"name\":{name},\"ts\":{},\"uptime\":{},\"load\":[{:.2},{:.2},{:.2}],\"cpu\":{:.1},\"cores\":{:?},\"cpuClocks\":[{clocks}],\"network\":[{network}],\"vrm\":{},\"gpu\":{},\
 \"gpuEstimated\":{},\"gpuSource\":{:?},\"gpuCu\":{},\"mem\":{{\"total\":{},\"avail\":{},\"swapTotal\":{},\"swapFree\":{}}},\"vram\":{},\"gtt\":{},\
 \"gtemp\":{},\"ctemp\":{},\"pwr\":{},\"sclk\":{},\"selfRss\":{},\"disks\":[{}]}}",
         n.ts, n.uptime, n.load[0], n.load[1], n.load[2], n.cpu, n.cores,
-        opt(n.gpu.map(|g| format!("{g:.1}"))),
+        vrm_json(n.vrm), opt(n.gpu.map(|g| format!("{g:.1}"))),
         n.gpu_source == Some("fdinfo"), n.gpu_source.unwrap_or("unavailable"), opt(n.gpu_cu), n.mem.total * 1024, n.mem.avail * 1024, n.mem.swap_total * 1024, n.mem.swap_free * 1024,
         pair(n.vram), pair(n.gtt),
         opt(n.gtemp.map(|v| format!("{v:.0}"))), opt(n.ctemp.map(|v| format!("{v:.0}"))),

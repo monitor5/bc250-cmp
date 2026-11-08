@@ -186,6 +186,38 @@ pub fn cpu_temp_path() -> Option<PathBuf> {
     None
 }
 
+#[derive(Clone, Copy)]
+pub struct VrmRail {
+    pub mv: Option<u64>,
+    pub ma: Option<u64>,
+    pub milli_c: Option<u64>,
+}
+
+impl VrmRail {
+    pub fn power_uw(&self) -> Option<u64> {
+        // mV × mA is µW. The driver uses the same formula for powerN_input.
+        self.mv?.checked_mul(self.ma?)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Vrm {
+    pub vin_mv: Option<u64>,
+    pub cpu: VrmRail,
+    pub gpu: VrmRail,
+}
+
+pub fn vrm_stats() -> Option<Vrm> {
+    let hwmon = fs::read_dir("/sys/class/hwmon").ok()?.flatten().map(|entry| entry.path())
+        .find(|path| read_str(&path.join("name")).is_some_and(|name| name.trim() == "bc250_vrm"))?;
+    let read = |file: &str| read_u64(&hwmon.join(file));
+    Some(Vrm {
+        vin_mv: read("in0_input"),
+        cpu: VrmRail { mv: read("in1_input"), ma: read("curr1_input"), milli_c: read("temp1_input") },
+        gpu: VrmRail { mv: read("in2_input"), ma: read("curr2_input"), milli_c: read("temp2_input") },
+    })
+}
+
 // ---------------------------------------------------------------- CPU / MEM
 
 /// (busy, total) jiffies for aggregate (index 0) and each core.
