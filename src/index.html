@@ -46,7 +46,8 @@ input[type=search]{background:var(--bg);color:var(--fg);border:1px solid var(--l
 .tw{overflow-x:auto;margin-top:6px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:12px}
 th,td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
-th{color:var(--mute);font-weight:500;cursor:pointer;user-select:none;position:sticky;top:0;background:var(--card)}
+th{color:var(--mute);font-weight:500;position:sticky;top:0;background:var(--card)}
+.proc-table th{cursor:pointer;user-select:none}
 th.on{color:var(--fg)}
 td.l,th.l{text-align:left}
 td.cmd{max-width:260px;overflow:hidden;text-overflow:ellipsis;color:var(--mute)}
@@ -75,6 +76,17 @@ const $=(s,r=document)=>r.querySelector(s);
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const pad=n=>String(n).padStart(2,"0");
+function fClock(mhz) {
+  if (mhz == null) return "–";
+  return mhz >= 1000 ? (mhz / 1000).toFixed(2) + " GHz" : mhz + " MHz";
+}
+function fRate(bps) {
+  if (bps == null) return "–";
+  const units = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"];
+  let i = 0;
+  while (bps >= 1000 && i < units.length - 1) { bps /= 1000; i++; }
+  return (i ? bps.toFixed(bps < 10 ? 1 : 0) : Math.round(bps)) + " " + units[i];
+}
 function fB(b){if(b==null)return"–";const u=["B","KiB","MiB","GiB","TiB"];let i=0;while(b>=1024&&i<4){b/=1024;i++}return(b>=100||i<2?b.toFixed(0):b.toFixed(1))+" "+u[i]}
 function fKiB(k){return k?fB(k*1024):"–"}
 function fUp(s){const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+"d ":"")+h+"h "+m+"m"}
@@ -142,8 +154,12 @@ function addNode(name,url){
   <div class="ch c2"></div>
   <div class="ph"><b>저장공간</b></div>
   <div class="disks"></div>
+  <div class="ph"><b>네트워크</b></div>
+  <div class="tw"><table aria-label="인터페이스별 네트워크 속도"><thead><tr>
+    <th scope="col" class="l">인터페이스</th><th scope="col" title="드라이버가 제공하는 링크 속도">링크</th><th scope="col">수신</th><th scope="col">송신</th>
+  </tr></thead><tbody class="net-rows"></tbody></table></div>
   <div class="ph"><b>프로세스</b><span class="mute pcount"></span><span class="sp"></span><label class="mute"><input type="checkbox" class="pk"> 커널 스레드</label><input type="search" placeholder="필터 (이름/명령/사용자)" class="pf"><button class="btn pp">일시정지</button></div>
-  <div class="tw"><table><thead><tr></tr></thead><tbody></tbody></table></div>
+  <div class="tw"><table class="proc-table"><thead><tr></tr></thead><tbody></tbody></table></div>
   <div style="margin-top:6px"><button class="btn pm">더 보기</button></div>`;
   $("#nodes").appendChild(el);
   const n={name,url:url||"",el,tiles:[...el.querySelectorAll(".tile")],
@@ -153,7 +169,7 @@ function addNode(name,url){
   $(".ssh",el).onclick=()=>{try{const host=new URL(url||location.href,location.href).hostname;prompt("터미널에서 실행하세요. 사용자와 경유지는 환경에 맞게 수정하세요.","ssh "+(host!==location.hostname?"-J bc250@"+location.hostname+" ":"")+"bc250@"+host)}catch(e){alert("SSH 주소를 확인할 수 없습니다.")}};
   for(const [i,kind] of [[0,"cpu"],[1,"gpu"]]){const t=n.tiles[i];t.classList.add("clickable");t.tabIndex=0;t.setAttribute("role","button");t.setAttribute("aria-expanded","false");const toggle=()=>{n.detail=n.detail===kind?null:kind;n.tiles[0].setAttribute("aria-expanded",n.detail==="cpu");n.tiles[1].setAttribute("aria-expanded",n.detail==="gpu");renderDetail(n)};t.onclick=toggle;t.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();toggle()}}}
   const cols=[["pid","PID"],["user","USER",1],["name","NAME",1],["cpu","CPU%"],["gpu","GPU%"],["rss","RSS"],["vram","VRAM"],["gtt","GTT"],["thr","THR"],["s","S"],["cmd","COMMAND",1]];
-  const tr=$("thead tr",el);
+  const tr=$(".proc-table thead tr",el);
   for(const[k,l,left]of cols){const th=document.createElement("th");th.textContent=l;th.dataset.k=k;if(left)th.className="l";th.onclick=()=>{if(n.sort===k)n.desc=!n.desc;else{n.sort=k;n.desc=!left}renderProcs(n)};tr.appendChild(th)}
   $(".pk",el).onchange=e=>{n.kthreads=e.target.checked;renderProcs(n)};
   $(".pf",el).oninput=e=>{n.filter=e.target.value.toLowerCase();renderProcs(n)};
@@ -163,8 +179,12 @@ function addNode(name,url){
 }
 function renderDetail(n){
   const el=$(".detail",n.el),d=n.now;el.hidden=!n.detail;if(!n.detail||!d)return;
-  if(n.detail==="cpu")el.innerHTML=`<h3>CPU 논리 코어별 사용률</h3><div class="detail-grid">${d.cores.map((v,i)=>`<div class="detail-item">CPU ${i} · ${v}%<div class="bar"><i style="width:${v}%;background:var(--cpu)"></i></div></div>`).join("")}</div>`;
-  else{const ps=n.procs.filter(p=>p.gpu!=null).sort((a,b)=>b.gpu-a.gpu).slice(0,10);el.innerHTML=`<h3>GPU 상세</h3><div class="detail-grid"><div class="detail-item">${d.gpuSource==="gpu_metrics"?"GPU 센서":d.gpuEstimated?"엔진 시간 추정":"전체 사용률"}: ${d.gpu==null?"N/A":d.gpu.toFixed(1)+"%"}</div><div class="detail-item">드라이버 인식 CU: ${d.gpuCu??"N/A"}</div><div class="detail-item">클록: ${d.sclk?d.sclk+" MHz":"N/A"}</div><div class="detail-item">온도: ${d.gtemp==null?"N/A":d.gtemp+" °C"}</div><div class="detail-item">전력: ${d.pwr==null?"N/A":d.pwr.toFixed(1)+" W"}</div><div class="detail-item">VRAM: ${d.vram?fB(d.vram.used)+" / "+fB(d.vram.total):"N/A"}</div><div class="detail-item">GTT: ${d.gtt?fB(d.gtt.used)+" / "+fB(d.gtt.total):"N/A"}</div></div><p class="mute">드라이버 인식 CU는 GPU가 사용할 수 있는 연산 유닛 수입니다. 실시간으로 부하가 걸린 CU 수는 제공되지 않습니다. 엔진 시간 추정은 GFX와 compute의 클라이언트별 누적 시간을 합산하며, 엔진 중복과 짧게 실행된 프로세스 때문에 실제 전체 점유율과 다를 수 있습니다. 아래는 프로세스별 GPU 엔진 사용률입니다.</p>${ps.length?ps.map(p=>`<div>${esc(p.name)} (PID ${p.pid}) · ${p.gpu.toFixed(1)}%</div>`).join(""):'<span class="mute">GPU 프로세스 정보 없음</span>'}`}
+  if (n.detail === "cpu") {
+    const clocks = (d.cpuClocks || []).map(([id, mhz]) => `<div class="detail-item">CPU ${id} · ${fClock(mhz)}</div>`).join("");
+    el.innerHTML = `<h3>CPU 논리 코어별 사용률</h3><div class="detail-grid">${d.cores.map((v,i)=>`<div class="detail-item">CPU ${i} · ${v}%<div class="bar"><i style="width:${v}%;background:var(--cpu)"></i></div></div>`).join("")}</div>` +
+      `<h3 style="margin-top:12px">CPU 논리 코어별 클록</h3><div class="detail-grid">${clocks || "–"}</div>`;
+  }
+  else{const ps=n.procs.filter(p=>p.gpu!=null).sort((a,b)=>b.gpu-a.gpu).slice(0,10);el.innerHTML=`<h3>GPU 상세</h3><div class="detail-grid"><div class="detail-item">${d.gpuSource==="gpu_metrics"?"GPU 센서":d.gpuEstimated?"엔진 시간 추정":"전체 사용률"}: ${d.gpu==null?"N/A":d.gpu.toFixed(1)+"%"}</div><div class="detail-item">드라이버 인식 CU: ${d.gpuCu??"N/A"}</div><div class="detail-item">클록: ${fClock(d.sclk)}</div><div class="detail-item">온도: ${d.gtemp==null?"N/A":d.gtemp+" °C"}</div><div class="detail-item">전력: ${d.pwr==null?"N/A":d.pwr.toFixed(1)+" W"}</div><div class="detail-item">VRAM: ${d.vram?fB(d.vram.used)+" / "+fB(d.vram.total):"N/A"}</div><div class="detail-item">GTT: ${d.gtt?fB(d.gtt.used)+" / "+fB(d.gtt.total):"N/A"}</div></div><p class="mute">드라이버 인식 CU는 GPU가 사용할 수 있는 연산 유닛 수입니다. 실시간으로 부하가 걸린 CU 수는 제공되지 않습니다. 엔진 시간 추정은 GFX와 compute의 클라이언트별 누적 시간을 합산하며, 엔진 중복과 짧게 실행된 프로세스 때문에 실제 전체 점유율과 다를 수 있습니다. 아래는 프로세스별 GPU 엔진 사용률입니다.</p>${ps.length?ps.map(p=>`<div>${esc(p.name)} (PID ${p.pid}) · ${p.gpu.toFixed(1)}%</div>`).join(""):'<span class="mute">GPU 프로세스 정보 없음</span>'}`}
 }
 function setTile(t,v,s,pct){t.querySelector(".v").textContent=v;t.querySelector(".s").textContent=s||" ";t.querySelector(".bar i").style.width=(pct==null?0:Math.max(0,Math.min(100,pct)))+"%"}
 function setDot(n,ok,msg){const d=$(".dot",n.el);d.className="dot "+(ok?"ok":"bad");if(!ok)$(".meta",n.el).innerHTML=`<span class="err">${esc(msg||"연결 끊김")}</span>`}
@@ -173,8 +193,18 @@ async function loadNow(n){
   try{
     const d=await get(n.url+(n.url?"/":"")+"api/now");n.now=d;setDot(n,true);
     const[cpu,gpu,ram,gtt,vram,sw,tp]=n.tiles;
-    setTile(cpu,d.cpu.toFixed(0)+"%",`load ${d.load[0].toFixed(2)} / ${d.load[1].toFixed(2)}`,d.cpu);
-    setTile(gpu,d.gpu==null?"N/A":d.gpu.toFixed(0)+"%",(d.gpuSource==="gpu_metrics"?"GPU 센서 · ":d.gpuEstimated?"엔진 시간 추정 · ":"")+(d.sclk?d.sclk+" MHz":""),d.gpu);
+    const load = `load ${d.load[0].toFixed(2)} / ${d.load[1].toFixed(2)}`;
+    const clocks = d.cpuClocks || [];
+    const meanMhz = clocks.length ? Math.round(clocks.reduce((sum, [, mhz]) => sum + mhz, 0) / clocks.length) : null;
+    cpu.title = "CPU · " + load;
+    setTile(cpu, d.cpu.toFixed(0) + "%", meanMhz == null ? load : "평균 " + fClock(meanMhz), d.cpu);
+    $(".net-rows", n.el).innerHTML = (d.network || []).map(iface => {
+      const link = iface.linkMbps == null ? "–" : fRate(iface.linkMbps * 1e6);
+      const rx = iface.rxBps == null ? "–" : fRate(iface.rxBps * 8);
+      const tx = iface.txBps == null ? "–" : fRate(iface.txBps * 8);
+      return `<tr><td class="l">${esc(iface.name)}</td><td>${link}</td><td>${rx}</td><td>${tx}</td></tr>`;
+    }).join("") || '<tr><td class="l mute" colspan="4">인터페이스 정보 없음</td></tr>';
+    setTile(gpu,d.gpu==null?"N/A":d.gpu.toFixed(0)+"%",(d.gpuSource==="gpu_metrics"?"GPU 센서 · ":d.gpuEstimated?"엔진 시간 추정 · ":"")+fClock(d.sclk),d.gpu);
     const used=d.mem.total-d.mem.avail;
     setTile(ram,fB(used),`/ ${fB(d.mem.total)}`,used/d.mem.total*100);
     const su=d.mem.swapTotal-d.mem.swapFree;setTile(sw,d.mem.swapTotal?fB(su):"없음",d.mem.swapTotal?"/ "+fB(d.mem.swapTotal):"swap 미설정",d.mem.swapTotal?su/d.mem.swapTotal*100:null);
@@ -204,9 +234,9 @@ function renderProcs(n){
   let ps=n.kthreads?n.procs:n.procs.filter(p=>p.cmd||p.rss);
   if(n.filter)ps=ps.filter(p=>(p.name+" "+p.cmd+" "+p.user).toLowerCase().includes(n.filter));
   ps=ps.slice().sort((a,b)=>{const x=a[k]??-1,y=b[k]??-1;return(typeof x==="string"?x.localeCompare(y):x-y)*dir});
-  n.el.querySelectorAll("th").forEach(th=>{th.classList.toggle("on",th.dataset.k===k)});
+  n.el.querySelectorAll(".proc-table th").forEach(th=>{th.classList.toggle("on",th.dataset.k===k)});
   $(".pcount",n.el).textContent=`${ps.length} / ${n.total||0}`;
-  $("tbody",n.el).innerHTML=ps.slice(0,n.show).map(p=>`<tr class="${p.gpu!=null?"hot":""}"><td>${p.pid}</td><td class="l">${esc(p.user)}</td><td class="l">${esc(p.name)}</td><td>${p.cpu.toFixed(1)}</td><td>${p.gpu==null?"":p.gpu.toFixed(1)}</td><td>${fKiB(p.rss)}</td><td>${p.vram?fKiB(p.vram):""}</td><td>${p.gtt?fKiB(p.gtt):""}</td><td>${p.thr}</td><td>${esc(p.s)}</td><td class="l cmd" title="${esc(p.cmd)}">${esc(p.cmd||"["+p.name+"]")}</td></tr>`).join("");
+  $(".proc-table tbody",n.el).innerHTML=ps.slice(0,n.show).map(p=>`<tr class="${p.gpu!=null?"hot":""}"><td>${p.pid}</td><td class="l">${esc(p.user)}</td><td class="l">${esc(p.name)}</td><td>${p.cpu.toFixed(1)}</td><td>${p.gpu==null?"":p.gpu.toFixed(1)}</td><td>${fKiB(p.rss)}</td><td>${p.vram?fKiB(p.vram):""}</td><td>${p.gtt?fKiB(p.gtt):""}</td><td>${p.thr}</td><td>${esc(p.s)}</td><td class="l cmd" title="${esc(p.cmd)}">${esc(p.cmd||"["+p.name+"]")}</td></tr>`).join("");
   const pm=$(".pm",n.el);pm.style.display=ps.length>25?"":"none";pm.textContent=n.show>25?"접기":`더 보기 (${ps.length})`;
 }
 

@@ -2,7 +2,7 @@
 //! except a handful of paths.
 use std::collections::HashMap;
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -115,8 +115,18 @@ impl Gpu {
         let h = self.hwmon.as_ref()?;
         read_u64(&h.join("power1_average")).or_else(|| read_u64(&h.join("power1_input"))).map(|v| v as f32 / 1e6)
     }
-    /// Current shader clock in MHz (line marked with '*' in pp_dpm_sclk)
+    /// GFX/compute clock in MHz. The BC-250 DPM table can report an incorrect clock.
     pub fn sclk(&self) -> Option<u32> {
+        if let Some(mhz) = self.hwmon.as_ref()
+            .and_then(|hwmon| read_u64(&hwmon.join("freq1_input")))
+            .and_then(|hz| u32::try_from(hz / 1_000_000).ok())
+            .filter(|&mhz| mhz > 0)
+        {
+            return Some(mhz);
+        }
+        if self.is_bc250 {
+            return None;
+        }
         let s = read_str(&self.dev.join("pp_dpm_sclk"))?;
         let l = s.lines().find(|l| l.trim_end().ends_with('*'))?;
         let mhz = l.split_whitespace().nth(1)?;
@@ -195,6 +205,96 @@ pub fn cpu_times() -> Vec<(u64, u64)> {
 pub fn pct(a: (u64, u64), b: (u64, u64)) -> f32 {
     let dt = b.1.saturating_sub(a.1);
     if dt == 0 { 0.0 } else { (b.0.saturating_sub(a.0)) as f32 * 100.0 / dt as f32 }
+}
+
+/// Current per-logical-CPU MHz, sampled less frequently than utilization.
+pub fn cpu_clocks() -> Vec<(u32, u32)> {
+    let Ok(file) = fs::File::open("/proc/cpuinfo") else { return Vec::new() };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut cpu = None;
+    let mut clocks = Vec::new();
+    while let Ok(1..) = reader.read_line(&mut line) {
+        if let Some((key, value)) = line.split_once(':') {
+            match key.trim() {
+                "processor" => cpu = value.trim().parse().ok(),
+                "cpu MHz" => {
+                    if let (Some(id), Ok(mhz)) = (cpu.take(), value.trim().parse::<f32>()) {
+                        if mhz.is_finite() && mhz > 0.0 {
+                            clocks.push((id, mhz.round() as u32));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        line.clear();
+    }
+    clocks
+}
+
+pub struct NetInterface {
+    pub name: String,
+    pub link_mbps: Option<u64>,
+    pub rx_bytes_per_sec: Option<u64>,
+    pub tx_bytes_per_sec: Option<u64>,
+    rx_bytes: u64,
+    tx_bytes: u64,
+}
+
+fn net_counters(line: &str) -> Option<(&str, u64, u64)> {
+    let (name, fields) = line.rsplit_once(':')?;
+    let mut fields = fields.split_whitespace();
+    let rx = fields.next()?.parse().ok()?;
+    let tx = fields.nth(7)?.parse().ok()?;
+    Some((name.trim(), rx, tx))
+}
+
+fn counter_rate(current: u64, previous: u64, elapsed: Duration) -> Option<u64> {
+    if elapsed.is_zero() {
+        return None;
+    }
+    let delta = current.checked_sub(previous)?;
+    Some((delta as f64 / elapsed.as_secs_f64()).round() as u64)
+}
+
+/// Read both directions together. Retain counters only for the latest sample.
+pub fn network_stats(previous: &[NetInterface], elapsed: Duration, refresh_links: bool) -> Vec<NetInterface> {
+    let contents = read_str(Path::new("/proc/net/dev")).unwrap_or_default();
+    let mut interfaces: Vec<_> = contents.lines().filter_map(net_counters).map(|(name, rx, tx)| {
+        let old = previous.binary_search_by(|item| item.name.as_str().cmp(name))
+            .ok().map(|index| &previous[index]);
+        let link_mbps = match old {
+            Some(item) if !refresh_links => item.link_mbps,
+            _ => read_u64(&Path::new("/sys/class/net").join(name).join("speed")).filter(|&speed| speed > 0),
+        };
+        NetInterface {
+            name: name.to_owned(),
+            link_mbps,
+            rx_bytes_per_sec: old.and_then(|item| counter_rate(rx, item.rx_bytes, elapsed)),
+            tx_bytes_per_sec: old.and_then(|item| counter_rate(tx, item.tx_bytes, elapsed)),
+            rx_bytes: rx,
+            tx_bytes: tx,
+        }
+    }).collect();
+    interfaces.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    interfaces
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_rx_and_tx_and_handles_counter_reset() {
+        let row = " eth1: 100 2 3 4 5 6 7 8 400 10 11 12 13 14 15 16";
+        assert_eq!(net_counters(row), Some(("eth1", 100, 400)));
+        assert_eq!(net_counters("invalid header"), None);
+        let elapsed = Duration::from_millis(1500);
+        assert_eq!(counter_rate(400, 100, elapsed), Some(200));
+        assert_eq!(counter_rate(50, 100, elapsed), None);
+        assert_eq!(counter_rate(100, 100, elapsed), Some(0));
+    }
 }
 
 #[derive(Default, Clone)]

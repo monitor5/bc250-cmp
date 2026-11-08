@@ -10,7 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const INDEX: &str = include_str!("index.html");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,6 +30,8 @@ struct Now {
     ts: u64,
     cpu: f32,
     cores: Vec<u8>,
+    cpu_clocks: Arc<Vec<(u32, u32)>>,
+    network: Arc<Vec<sys::NetInterface>>,
     gpu: Option<f32>,
     gpu_source: Option<&'static str>,
     gpu_cu: Option<u32>,
@@ -113,6 +115,11 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>,
     let mut prev = sys::cpu_times();
     let mut acc = Acc::default();
     let mut engines = None;
+    let mut network = Arc::new(Vec::new());
+    let mut network_at = Instant::now();
+    let mut link_at = None;
+    let mut clocks = Arc::new(Vec::new());
+    let mut clocks_at = None;
     loop {
         if gpu.is_none() { gpu = sys::Gpu::detect(gpu_dev.clone()); }
         let (mut gsum, mut gmax, mut gn) = (0u64, 0u64, 0u64);
@@ -140,11 +147,24 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>,
         let cpu = if !cur.is_empty() && !prev.is_empty() { sys::pct(prev[0], cur[0]) } else { 0.0 };
         let cores: Vec<u8> = cur.iter().skip(1).zip(prev.iter().skip(1)).map(|(b, a)| sys::pct(*a, *b).round() as u8).collect();
         prev = cur;
+        let sampled_at = Instant::now();
+        let refresh_links = link_at.is_none_or(|at| sampled_at.duration_since(at) >= Duration::from_secs(10));
+        network = Arc::new(sys::network_stats(&network, sampled_at.duration_since(network_at), refresh_links));
+        network_at = sampled_at;
+        if refresh_links {
+            link_at = Some(sampled_at);
+        }
+        if clocks_at.is_none_or(|at| sampled_at.duration_since(at) >= Duration::from_secs(4)) {
+            clocks = Arc::new(sys::cpu_clocks());
+            clocks_at = Some(sampled_at);
+        }
         let g = gpu.as_ref();
         let now = Now {
             ts: unix(),
             cpu,
             cores,
+            cpu_clocks: Arc::clone(&clocks),
+            network: Arc::clone(&network),
             gpu: metrics.or_else(|| if gn > 0 { Some(gsum as f32 / gn as f32) } else { estimate }),
             gpu_source: if metrics.is_some() { Some("gpu_metrics") }
                 else if gn > 0 { Some("sysfs") }
@@ -203,8 +223,24 @@ fn now_json(cfg: &Cfg, n: &Now) -> String {
         sys::esc(dev, &mut disks);
         disks.push_str(&format!(",\"fs\":\"{fs}\",\"total\":{t},\"used\":{u},\"avail\":{a}}}"));
     }
+    let mut network = String::new();
+    for (i, iface) in n.network.iter().enumerate() {
+        if i > 0 { network.push(','); }
+        network.push_str("{\"name\":");
+        sys::esc(&iface.name, &mut network);
+        use std::fmt::Write as _;
+        let _ = write!(network, ",\"linkMbps\":{},\"rxBps\":{},\"txBps\":{}}}",
+            opt(iface.link_mbps), opt(iface.rx_bytes_per_sec), opt(iface.tx_bytes_per_sec));
+    }
+    // Tuples use Rust debug syntax, so emit JSON arrays explicitly.
+    let mut clocks = String::new();
+    for (i, (id, mhz)) in n.cpu_clocks.iter().enumerate() {
+        if i > 0 { clocks.push(','); }
+        use std::fmt::Write as _;
+        let _ = write!(clocks, "[{id},{mhz}]");
+    }
     format!(
-        "{{\"name\":{name},\"ts\":{},\"uptime\":{},\"load\":[{:.2},{:.2},{:.2}],\"cpu\":{:.1},\"cores\":{:?},\"gpu\":{},\
+        "{{\"name\":{name},\"ts\":{},\"uptime\":{},\"load\":[{:.2},{:.2},{:.2}],\"cpu\":{:.1},\"cores\":{:?},\"cpuClocks\":[{clocks}],\"network\":[{network}],\"gpu\":{},\
 \"gpuEstimated\":{},\"gpuSource\":{:?},\"gpuCu\":{},\"mem\":{{\"total\":{},\"avail\":{},\"swapTotal\":{},\"swapFree\":{}}},\"vram\":{},\"gtt\":{},\
 \"gtemp\":{},\"ctemp\":{},\"pwr\":{},\"sclk\":{},\"selfRss\":{},\"disks\":[{}]}}",
         n.ts, n.uptime, n.load[0], n.load[1], n.load[2], n.cpu, n.cores,
