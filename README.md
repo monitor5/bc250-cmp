@@ -54,7 +54,7 @@ INTERVAL=2
 
 **접근 제한:** 인증과 암호화 기능이 없습니다. 신뢰할 수 있는 사설망 또는 VPN의 필요한 인터페이스에만 바인딩하고, 방화벽으로 접근을 제한하세요. `0.0.0.0`은 모든 인터페이스에 노출합니다.
 
-GPU 전체 센서를 사용할 수 없으면 Linux DRM fdinfo의 GFX/compute 엔진 시간을 클라이언트별로 합산한 추정값을 사용합니다. 중복된 엔진 실행, 짧게 실행된 프로세스, KFD 직접 큐 등은 정확히 반영되지 않을 수 있으며 하드웨어 점유율이나 개별 연산 코어 사용률이 아닙니다. 카운터가 없으면 N/A로 표시합니다. 이 방식은 [nvtop](https://github.com/Syllo/nvtop)과 [BC-250 Toolkit](https://github.com/Necrosiak/bc250-toolkit-decky)의 GPU 엔진 계측 접근을 참고했습니다. SSH 버튼은 접속 명령만 표시하며 원격 셸을 웹에서 실행하지 않습니다. 예시 구성에서 두 번째 노드가 브라우저 장치에 직접 연결되지 않으면 `ssh -J bc250@192.168.0.20 bc250@192.168.50.191`을 사용하세요.
+GPU 상세는 AMDGPU가 인식한 활성 CU 수도 표시합니다. 현재 작업에 투입된 CU 수는 드라이버에서 제공하지 않습니다. BC-250에서는 먼저 `gpu_metrics` v2.2의 GFX 사용률을 읽습니다. [Cyan Skillfish Governor](https://github.com/filippor/cyan-skillfish-governor)의 `fix-metrics`로 제공되는 값도 지원합니다. GPU 전체 센서를 사용할 수 없으면 Linux DRM fdinfo의 GFX/compute 엔진 시간을 클라이언트별로 합산한 추정값을 사용합니다. 중복된 엔진 실행, 짧게 실행된 프로세스, KFD 직접 큐 등은 정확히 반영되지 않을 수 있으며 하드웨어 점유율이나 개별 연산 코어 사용률이 아닙니다. 카운터가 없으면 N/A로 표시합니다. 이 방식은 [nvtop](https://github.com/Syllo/nvtop)과 [BC-250 Toolkit](https://github.com/Necrosiak/bc250-toolkit-decky)의 GPU 엔진 계측 접근을 참고했습니다. SSH 버튼은 접속 명령만 표시하며 원격 셸을 웹에서 실행하지 않습니다. 예시 구성에서 두 번째 노드가 브라우저 장치에 직접 연결되지 않으면 `ssh -J bc250@192.168.0.20 bc250@192.168.50.191`을 사용하세요.
 
 ## 서비스와 자원 사용량
 

@@ -2,12 +2,15 @@
 //! except a handful of paths.
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 extern "C" {
     fn sysconf(name: i32) -> i64;
+    fn ioctl(fd: i32, request: std::ffi::c_ulong, ...) -> i32;
     fn statvfs(path: *const std::ffi::c_char, buf: *mut u64) -> i32;
 }
 
@@ -60,6 +63,8 @@ pub fn hostname() -> String {
 pub struct Gpu {
     dev: PathBuf,
     hwmon: Option<PathBuf>,
+    pub is_bc250: bool,
+    pub compute_units: Option<u32>,
 }
 
 impl Gpu {
@@ -84,10 +89,18 @@ impl Gpu {
             }
         };
         let hwmon = fs::read_dir(dev.join("hwmon")).ok().and_then(|mut r| r.next()).and_then(|e| e.ok()).map(|e| e.path());
-        Some(Gpu { dev, hwmon })
+        let is_bc250 = read_str(&dev.join("device")).is_some_and(|id| id.trim() == "0x13fe")
+            && read_str(&dev.join("vendor")).is_some_and(|id| id.trim() == "0x1002");
+        let compute_units = gpu_compute_units(&dev);
+        Some(Gpu { dev, hwmon, is_bc250, compute_units })
     }
     pub fn busy(&self) -> Option<u64> {
-        read_u64(&self.dev.join("gpu_busy_percent"))
+        read_u64(&self.dev.join("gpu_busy_percent")).filter(|value| *value <= 100)
+    }
+    pub fn metrics_busy(&self) -> Option<f32> {
+        let mut header = [0; 30];
+        fs::File::open(self.dev.join("gpu_metrics")).ok()?.read_exact(&mut header).ok()?;
+        bc250_metrics_busy(&header)
     }
     pub fn mem(&self, kind: &str) -> Option<(u64, u64)> {
         let t = read_u64(&self.dev.join(format!("mem_info_{kind}_total")))?;
@@ -109,6 +122,47 @@ impl Gpu {
         let mhz = l.split_whitespace().nth(1)?;
         mhz.trim_end_matches("Mhz").trim_end_matches("MHz").parse().ok()
     }
+}
+
+// Read the driver's enabled CU count via the Linux amdgpu DRM UAPI.
+fn gpu_compute_units(dev: &Path) -> Option<u32> {
+    #[repr(C)]
+    struct DrmAmdgpuInfo {
+        return_pointer: u64,
+        return_size: u32,
+        query: u32,
+        args: [u32; 4],
+    }
+
+    // DRM_IOW(DRM_COMMAND_BASE + DRM_AMDGPU_INFO, struct drm_amdgpu_info).
+    const DRM_IOCTL_AMDGPU_INFO: std::ffi::c_ulong = 0x4020_6445;
+    const AMDGPU_INFO_DEV_INFO: u32 = 0x16;
+    const CU_ACTIVE_OFFSET: usize = 48;
+    let render_node = fs::read_dir(dev.join("drm")).ok()?.flatten()
+        .map(|entry| entry.file_name())
+        .find(|name| name.as_encoded_bytes().starts_with(b"renderD"))?;
+    let fd = fs::File::open(Path::new("/dev/dri").join(render_node)).ok()?;
+    let mut reply = [0u8; CU_ACTIVE_OFFSET + 4];
+    let mut request = DrmAmdgpuInfo {
+        return_pointer: reply.as_mut_ptr() as u64,
+        return_size: reply.len() as u32,
+        query: AMDGPU_INFO_DEV_INFO,
+        args: [0; 4],
+    };
+    // The kernel copies at most return_size bytes into reply while both buffers are live.
+    let result = unsafe { ioctl(fd.as_raw_fd(), DRM_IOCTL_AMDGPU_INFO, &mut request as *mut DrmAmdgpuInfo) };
+    let count = u32::from_ne_bytes(reply[CU_ACTIVE_OFFSET..].try_into().ok()?);
+    (result == 0 && count > 0).then_some(count)
+}
+
+// Cyan Skillfish gpu_metrics v2.2 stores GFX activity at bytes 28–29.
+fn bc250_metrics_busy(header: &[u8; 30]) -> Option<f32> {
+    let size = u16::from_le_bytes([header[0], header[1]]);
+    if size < 30 || header[2..4] != [2, 2] {
+        return None;
+    }
+    let activity = u16::from_le_bytes([header[28], header[29]]);
+    (activity <= 10_000).then(|| f32::from(activity) / 100.0)
 }
 
 /// CPU temperature (k10temp Tctl) path, if present.
@@ -468,6 +522,19 @@ pub fn procs_json(limit: usize, gap: Duration) -> String {
 #[cfg(test)]
 mod gpu_engine_tests {
     use super::*;
+    #[test]
+    fn metrics_decode_activity_and_reject_sentinel() {
+        let mut header = [0; 30];
+        header[..4].copy_from_slice(&[128, 0, 2, 2]);
+        header[28..].copy_from_slice(&2540u16.to_le_bytes());
+        assert_eq!(bc250_metrics_busy(&header), Some(25.4));
+        header[28..].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert_eq!(bc250_metrics_busy(&header), None);
+        header[3] = 1;
+        header[28..].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(bc250_metrics_busy(&header), None);
+    }
+
     #[test]
     fn engine_counters_filter_device_and_deduplicate() {
         let mut a = EngineSnapshot::new();

@@ -31,7 +31,8 @@ struct Now {
     cpu: f32,
     cores: Vec<u8>,
     gpu: Option<f32>,
-    gpu_estimated: bool,
+    gpu_source: Option<&'static str>,
+    gpu_cu: Option<u32>,
     mem: sys::Mem,
     vram: Option<(u64, u64)>,
     gtt: Option<(u64, u64)>,
@@ -115,15 +116,18 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>,
     loop {
         if gpu.is_none() { gpu = sys::Gpu::detect(gpu_dev.clone()); }
         let (mut gsum, mut gmax, mut gn) = (0u64, 0u64, 0u64);
-        for _ in 0..SUB {
-            std::thread::sleep(interval / SUB);
+        // The BC-250 governor already samples GPU activity continuously.
+        let sub = if gpu.as_ref().is_some_and(|g| g.is_bc250) { 1 } else { SUB };
+        for _ in 0..sub {
+            std::thread::sleep(interval / sub);
             if let Some(b) = gpu.as_ref().and_then(|g| g.busy()) {
                 gsum += b;
                 gmax = gmax.max(b);
                 gn += 1;
             }
         }
-        let estimate = if gn == 0 {
+        let metrics = gpu.as_ref().filter(|g| g.is_bc250).and_then(|g| g.metrics_busy());
+        let estimate = if metrics.is_none() && gn == 0 {
             gpu.as_ref().and_then(|g| {
                 let current = sys::gpu_engine_snapshot(g);
                 let now = std::time::Instant::now();
@@ -141,8 +145,12 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>,
             ts: unix(),
             cpu,
             cores,
-            gpu: if gn > 0 { Some(gsum as f32 / gn as f32) } else { estimate },
-            gpu_estimated: gn == 0 && estimate.is_some(),
+            gpu: metrics.or_else(|| if gn > 0 { Some(gsum as f32 / gn as f32) } else { estimate }),
+            gpu_source: if metrics.is_some() { Some("gpu_metrics") }
+                else if gn > 0 { Some("sysfs") }
+                else if estimate.is_some() { Some("fdinfo") }
+                else { None },
+            gpu_cu: g.and_then(|g| g.compute_units),
             mem: sys::meminfo(),
             vram: g.and_then(|g| g.mem("vram")),
             gtt: g.and_then(|g| g.mem("gtt")),
@@ -159,7 +167,7 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>,
             cpu: o8(Some(cpu)),
             cpu_max: o8(Some(cpu)),
             gpu: o8(now.gpu),
-            gpu_max: if gn > 0 { gmax.min(254) as u8 } else { o8(estimate) },
+            gpu_max: if metrics.is_none() && gn > 0 { gmax.min(254) as u8 } else { o8(now.gpu) },
             mem: permille(now.mem.total - now.mem.avail.min(now.mem.total), now.mem.total),
             vram: now.vram.map(|(t, u)| permille(u, t)).unwrap_or(NONE16),
             gtt: now.gtt.map(|(t, u)| permille(u, t)).unwrap_or(NONE16),
@@ -197,11 +205,11 @@ fn now_json(cfg: &Cfg, n: &Now) -> String {
     }
     format!(
         "{{\"name\":{name},\"ts\":{},\"uptime\":{},\"load\":[{:.2},{:.2},{:.2}],\"cpu\":{:.1},\"cores\":{:?},\"gpu\":{},\
-\"gpuEstimated\":{},\"mem\":{{\"total\":{},\"avail\":{},\"swapTotal\":{},\"swapFree\":{}}},\"vram\":{},\"gtt\":{},\
+\"gpuEstimated\":{},\"gpuSource\":{:?},\"gpuCu\":{},\"mem\":{{\"total\":{},\"avail\":{},\"swapTotal\":{},\"swapFree\":{}}},\"vram\":{},\"gtt\":{},\
 \"gtemp\":{},\"ctemp\":{},\"pwr\":{},\"sclk\":{},\"selfRss\":{},\"disks\":[{}]}}",
         n.ts, n.uptime, n.load[0], n.load[1], n.load[2], n.cpu, n.cores,
         opt(n.gpu.map(|g| format!("{g:.1}"))),
-        n.gpu_estimated, n.mem.total * 1024, n.mem.avail * 1024, n.mem.swap_total * 1024, n.mem.swap_free * 1024,
+        n.gpu_source == Some("fdinfo"), n.gpu_source.unwrap_or("unavailable"), opt(n.gpu_cu), n.mem.total * 1024, n.mem.avail * 1024, n.mem.swap_total * 1024, n.mem.swap_free * 1024,
         pair(n.vram), pair(n.gtt),
         opt(n.gtemp.map(|v| format!("{v:.0}"))), opt(n.ctemp.map(|v| format!("{v:.0}"))),
         opt(n.pwr.map(|v| format!("{v:.1}"))), opt(n.sclk), sys::self_rss_kb() * 1024, disks
