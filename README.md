@@ -1,55 +1,96 @@
-# bc250mon
+# BC-250 CMP (monitor-only)
 
-BC-250 두 대를 위한 초경량 웹 모니터. 노드마다 **정적 바이너리 1개(약 600 KB, RSS 약 1 MB)** 만 돌리면 되고, 같은 바이너리가 웹 UI도 제공합니다. 외부 의존성, DB, Python, Node, Docker 모두 없음.
+BC-250 시스템의 상태를 웹에서 확인하는 경량 모니터입니다. 각 노드에서 `bc250mon` 바이너리 하나가 수집기와 웹 UI를 함께 실행합니다. 중앙 서버, 데이터베이스, Python, Node.js, Docker는 필요하지 않습니다.
 
-## 기능
-- 두 노드의 CPU / GPU 사용률 그래프 (15m, 1h, 6h, 24h, 7d), 구간 평균 + 구간 최대(점선)
-- 기록: 2초 간격 최근 1시간(RAM), 1분 평균 N일(기본 7일, 디스크 `/var/lib/bc250mon/history.bin`, 분당 20 byte pwrite)
-- 메모리: RAM, GTT(GPU가 시스템 RAM에서 가져간 양), VRAM carve-out, swap
-- GPU 온도 / CPU(k10temp) 온도 / GPU 전력 / shader clock, 코어별 CPU
-- 노드별 프로세스 목록: CPU%, **프로세스별 GPU% 와 VRAM/GTT** (amdgpu fdinfo), RSS, 스레드, 명령줄. 정렬, 필터, 커널 스레드 숨김
+모니터링 전용으로 CPU, GPU, 메모리와 프로세스 상태를 보여줍니다. 프로세스 종료나 시스템 설정 변경 기능은 제공하지 않습니다.
 
-## 구조
+## 주요 기능
+
+- CPU 및 GPU 사용률 그래프: 15분, 1시간, 6시간, 24시간, 7일. 구간 평균과 최대값 표시
+- RAM, GTT, VRAM, 스왑, GPU 및 CPU 온도, GPU 전력과 클록, 코어별 CPU 사용률
+- 프로세스별 CPU 및 GPU 사용률, VRAM/GTT, RSS, 스레드와 명령줄. 정렬 및 필터 지원
+- 최근 1시간의 2초 샘플은 메모리에, 기본 7일의 1분 평균은 디스크에 저장
+- 설정된 노드의 API를 서버가 프록시하므로 브라우저에서 직접 접근할 수 없는 노드도 표시
+
+데이터는 Linux `/proc` 및 AMD GPU의 `/sys`와 `fdinfo`에서 읽습니다. 프로세스 목록은 화면에서 해당 목록을 볼 때 수집합니다.
+
+## 구성 예시
+
+```text
+브라우저 ──> bc250-1:9250 ──> bc250-2:9250
+                 웹 UI           노드 API
 ```
-브라우저 (VPN 내부) ──► bc250-1:9250  (UI + /api/*)
-                    └─► bc250-2:9250  (/api/*, CORS 허용)
-```
-어느 노드로 접속해도 `PEERS`에 적은 두 노드를 모두 보여줍니다. 중앙 서버가 없어서 한 대가 죽어도 다른 한 대로 계속 볼 수 있습니다.
 
-데이터 소스: `/proc/stat`, `/proc/meminfo`, `/proc/<pid>/{stat,cmdline,fd,fdinfo}`, `/sys/class/drm/cardN/device/{gpu_busy_percent,mem_info_*,pp_dpm_sclk,hwmon}`.
-샘플링은 수집 스레드 1개가 2초마다(GPU는 0.5초마다 sub-sample) 파일 몇 개를 읽는 게 전부이고, 프로세스 스캔은 브라우저가 프로세스 목록을 볼 때만(5초마다, 탭이 보일 때만) 실행됩니다.
+각 노드에 같은 바이너리를 설치하고, `PEERS`에는 서비스를 실행하는 노드가 접근할 수 있는 주소를 지정합니다. 브라우저는 접속한 노드의 `/peer/<번호>/api/...` 경로를 통해 다른 노드의 데이터를 가져옵니다. 어느 노드에서든 다른 노드로 연결할 수 있다면 양쪽 데이터를 볼 수 있습니다.
 
-## 설치 (각 노드)
+## 설치
+
+Linux x86-64용 정적 바이너리는 `dist` 브랜치에서 제공합니다. 각 노드에서 다음을 실행합니다.
+
 ```sh
-tar xzf bc250mon-*.tar.gz && cd bc250mon
+curl -fL -o bc250mon-x86_64-linux.tar.gz https://github.com/monitor5/bc250-cmp/raw/refs/heads/dist/bc250mon-x86_64-linux.tar.gz
+curl -fL -o SHA256SUMS https://github.com/monitor5/bc250-cmp/raw/refs/heads/dist/SHA256SUMS
+sha256sum -c SHA256SUMS
+tar xzf bc250mon-x86_64-linux.tar.gz
+cd bc250mon
 sudo ./deploy/install.sh
-sudo vi /etc/default/bc250mon   # LISTEN=<이 노드의 VPN IP>:9250, NAME, PEERS
+sudo vi /etc/default/bc250mon
 sudo systemctl enable --now bc250mon
 ```
-브라우저에서 `http://<VPN IP>:9250/` 접속.
 
-systemd 유닛은 `MemoryMax=16M`, `CPUQuota=10%`, `Nice=10`, `IOSchedulingClass=idle` 로 묶여 있어서 추론 작업의 RAM/CPU를 절대 넘보지 못합니다. 권한은 root지만 capability를 `CAP_SYS_PTRACE`(다른 프로세스의 fd 읽기, 프로세스별 GPU 사용량용)와 `CAP_DAC_READ_SEARCH`로 제한하고, 파일시스템은 `ProtectSystem=strict`로 읽기 전용입니다.
+설정 예시 (`bc250-1` 기준):
 
-**보안**: 인증이 없으므로 반드시 `LISTEN`을 VPN 인터페이스 IP로 지정하세요(0.0.0.0 금지). 읽기 전용 API라 프로세스를 죽이거나 설정을 바꾸는 기능은 없습니다.
-
-## 옵션
+```sh
+LISTEN=192.168.0.20:9250
+NAME=bc250-1
+PEERS=bc250-1=http://192.168.0.20:9250,bc250-2=http://192.168.50.191:9250
+DAYS=7
+INTERVAL=2
 ```
---listen ADDR    기본 0.0.0.0:9250
---name NAME      기본 hostname
+
+두 번째 노드에서는 `NAME`과 `LISTEN`을 해당 노드에 맞게 바꿉니다. 양 노드에서 서로의 `PEERS` 주소로 연결할 수 있어야 합니다. 설정 변경 후 `sudo systemctl restart bc250mon`을 실행하고, 브라우저에서 첫 번째 노드의 `http://192.168.0.20:9250/`을 엽니다.
+
+**접근 제한:** 인증과 암호화 기능이 없습니다. 신뢰할 수 있는 사설망 또는 VPN의 필요한 인터페이스에만 바인딩하고, 방화벽으로 접근을 제한하세요. `0.0.0.0`은 모든 인터페이스에 노출합니다.
+
+## 서비스와 자원 사용량
+
+제공되는 systemd 서비스는 다른 사용자의 프로세스별 GPU 정보를 읽기 위해 root로 실행되며, capability를 제한합니다. `MemoryMax=16M`, `MemorySwapMax=0`, `CPUQuota=10%`가 설정되어 있습니다. 메모리 제한에 도달하면 서비스가 종료되거나 재시작될 수 있습니다.
+
+2026-11-08에 v0.2.1을 두 BC-250에서 실행하고 API와 프로세스 목록을 조회한 직후 측정한 값은 다음과 같습니다. 서비스 가동 약 4분 후의 스냅샷이며, 부하와 실행 시간에 따라 달라집니다.
+
+| 노드 | 프로세스 RSS | systemd 서비스 메모리 현재 / 관측 최대 |
+|---|---:|---:|
+| bc250-1 | 820 KiB | 약 3.1 / 3.5 MiB |
+| bc250-2 | 880 KiB | 약 4.6 / 4.7 MiB |
+
+RSS는 프로세스의 상주 메모리이고 systemd 값은 서비스 cgroup의 메모리 사용량으로 파일 캐시 등을 포함할 수 있어 서로 다릅니다. 직접 확인하려면:
+
+```sh
+systemctl status bc250mon
+systemctl show bc250mon -p MemoryCurrent -p MemoryPeak -p NRestarts
+pid=$(systemctl show bc250mon -p MainPID --value)
+grep -E '^Vm(RSS|HWM|Swap):' /proc/$pid/status
+```
+
+## 옵션과 API
+
+```text
+--listen ADDR    수신 주소 (기본 0.0.0.0:9250)
+--name NAME      노드 이름 (기본 hostname)
 --peers LIST     name=http://ip:port,name2=http://ip2:port
---data FILE      기본 /var/lib/bc250mon/history.bin ('none' = RAM만)
---days N         1분 기록 보관 일수 (기본 7, 30일이어도 RAM ~0.9 MB)
---interval SEC   기본 2
---gpu-dev PATH   amdgpu sysfs 디렉터리 (기본 자동 탐지, vendor 0x1002)
+--data FILE      기록 파일 (기본 /var/lib/bc250mon/history.bin, none이면 RAM만 사용)
+--days N         1분 기록 보관 일수 (기본 7)
+--interval SEC   샘플 간격 (기본 2초)
+--gpu-dev PATH   amdgpu sysfs 경로 (기본 자동 탐지)
 ```
 
-## API
-- `GET /api/now` 현재 값
-- `GET /api/hist?sec=3600&n=600` 기록 (columnar JSON, 최대 n 버킷)
-- `GET /api/procs?n=300` 프로세스 (0.5초 간격 2회 스냅샷으로 CPU%/GPU% 계산)
-- `GET /api/info` 노드 이름, peers
+- `GET /api/now`: 현재 값
+- `GET /api/hist?sec=3600&n=600`: 기간별 기록
+- `GET /api/procs?n=300`: 프로세스 목록
+- `GET /api/info`: 노드와 peer 설정
 
-## 빌드
+## 소스에서 빌드
+
 ```sh
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
