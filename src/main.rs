@@ -31,6 +31,7 @@ struct Now {
     cpu: f32,
     cores: Vec<u8>,
     gpu: Option<f32>,
+    gpu_estimated: bool,
     mem: sys::Mem,
     vram: Option<(u64, u64)>,
     gtt: Option<(u64, u64)>,
@@ -105,12 +106,14 @@ fn permille(used: u64, total: u64) -> u16 {
     if total == 0 { NONE16 } else { ((used as f64 * 1000.0 / total as f64).round() as u16).min(1000) }
 }
 
-fn sampler(st: Arc<Mutex<State>>, interval: Duration, gpu: Option<sys::Gpu>) {
+fn sampler(st: Arc<Mutex<State>>, interval: Duration, mut gpu: Option<sys::Gpu>, gpu_dev: Option<PathBuf>) {
     const SUB: u32 = 4; // GPU busy is instantaneous; sub-sample it
     let ctemp_path = sys::cpu_temp_path();
     let mut prev = sys::cpu_times();
     let mut acc = Acc::default();
+    let mut engines = None;
     loop {
+        if gpu.is_none() { gpu = sys::Gpu::detect(gpu_dev.clone()); }
         let (mut gsum, mut gmax, mut gn) = (0u64, 0u64, 0u64);
         for _ in 0..SUB {
             std::thread::sleep(interval / SUB);
@@ -120,6 +123,15 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, gpu: Option<sys::Gpu>) {
                 gn += 1;
             }
         }
+        let estimate = if gn == 0 {
+            gpu.as_ref().and_then(|g| {
+                let current = sys::gpu_engine_snapshot(g);
+                let now = std::time::Instant::now();
+                let value = engines.as_ref().and_then(|(prev, at)| sys::gpu_engine_percent(prev, &current, now.duration_since(*at).as_secs_f64()));
+                engines = Some((current, now));
+                value
+            })
+        } else { engines = None; None };
         let cur = sys::cpu_times();
         let cpu = if !cur.is_empty() && !prev.is_empty() { sys::pct(prev[0], cur[0]) } else { 0.0 };
         let cores: Vec<u8> = cur.iter().skip(1).zip(prev.iter().skip(1)).map(|(b, a)| sys::pct(*a, *b).round() as u8).collect();
@@ -129,7 +141,8 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, gpu: Option<sys::Gpu>) {
             ts: unix(),
             cpu,
             cores,
-            gpu: if gn > 0 { Some(gsum as f32 / gn as f32) } else { None },
+            gpu: if gn > 0 { Some(gsum as f32 / gn as f32) } else { estimate },
+            gpu_estimated: gn == 0 && estimate.is_some(),
             mem: sys::meminfo(),
             vram: g.and_then(|g| g.mem("vram")),
             gtt: g.and_then(|g| g.mem("gtt")),
@@ -146,7 +159,7 @@ fn sampler(st: Arc<Mutex<State>>, interval: Duration, gpu: Option<sys::Gpu>) {
             cpu: o8(Some(cpu)),
             cpu_max: o8(Some(cpu)),
             gpu: o8(now.gpu),
-            gpu_max: if gn > 0 { gmax.min(254) as u8 } else { NONE8 },
+            gpu_max: if gn > 0 { gmax.min(254) as u8 } else { o8(estimate) },
             mem: permille(now.mem.total - now.mem.avail.min(now.mem.total), now.mem.total),
             vram: now.vram.map(|(t, u)| permille(u, t)).unwrap_or(NONE16),
             gtt: now.gtt.map(|(t, u)| permille(u, t)).unwrap_or(NONE16),
@@ -184,11 +197,11 @@ fn now_json(cfg: &Cfg, n: &Now) -> String {
     }
     format!(
         "{{\"name\":{name},\"ts\":{},\"uptime\":{},\"load\":[{:.2},{:.2},{:.2}],\"cpu\":{:.1},\"cores\":{:?},\"gpu\":{},\
-\"mem\":{{\"total\":{},\"avail\":{},\"swapTotal\":{},\"swapFree\":{}}},\"vram\":{},\"gtt\":{},\
+\"gpuEstimated\":{},\"mem\":{{\"total\":{},\"avail\":{},\"swapTotal\":{},\"swapFree\":{}}},\"vram\":{},\"gtt\":{},\
 \"gtemp\":{},\"ctemp\":{},\"pwr\":{},\"sclk\":{},\"selfRss\":{},\"disks\":[{}]}}",
         n.ts, n.uptime, n.load[0], n.load[1], n.load[2], n.cpu, n.cores,
         opt(n.gpu.map(|g| format!("{g:.1}"))),
-        n.mem.total * 1024, n.mem.avail * 1024, n.mem.swap_total * 1024, n.mem.swap_free * 1024,
+        n.gpu_estimated, n.mem.total * 1024, n.mem.avail * 1024, n.mem.swap_total * 1024, n.mem.swap_free * 1024,
         pair(n.vram), pair(n.gtt),
         opt(n.gtemp.map(|v| format!("{v:.0}"))), opt(n.ctemp.map(|v| format!("{v:.0}"))),
         opt(n.pwr.map(|v| format!("{v:.1}"))), opt(n.sclk), sys::self_rss_kb() * 1024, disks
@@ -332,7 +345,7 @@ fn main() {
     let cfg = Arc::new(parse_args());
     let gpu = sys::Gpu::detect(cfg.gpu_dev.clone());
     if gpu.is_none() {
-        eprintln!("bc250mon: no amdgpu device with gpu_busy_percent found; GPU metrics disabled");
+        eprintln!("bc250mon: no amdgpu device with gpu_busy_percent found; will retry GPU detection");
     }
     let fine_cap = (3600.0 / cfg.interval.as_secs_f32()).ceil() as usize + 2;
     let coarse = Store::open(cfg.data.as_deref(), (cfg.days.max(1) * 1440) as usize);
@@ -340,8 +353,9 @@ fn main() {
     {
         let st = st.clone();
         let iv = cfg.interval;
+        let gpu_dev = cfg.gpu_dev.clone();
         std::thread::Builder::new().name("sampler".into()).stack_size(128 * 1024)
-            .spawn(move || sampler(st, iv, gpu)).expect("spawn sampler");
+            .spawn(move || sampler(st, iv, gpu, gpu_dev)).expect("spawn sampler");
     }
     let l = TcpListener::bind(&cfg.listen).unwrap_or_else(|e| {
         eprintln!("bc250mon: bind {}: {e}", cfg.listen);

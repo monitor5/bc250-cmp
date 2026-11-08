@@ -219,6 +219,7 @@ fn read_pstat(pid: u32) -> Option<PStat> {
 struct DrmInfo {
     client: u64,
     engine_ns: u64,
+    has_engine: bool,
     vram_kib: u64,
     gtt_kib: u64,
 }
@@ -249,7 +250,10 @@ fn read_fdinfo(pid: u32, fd: &str) -> Option<DrmInfo> {
             "drm-resident-vram" => res_v = Some(parse_kib(v)),
             "drm-resident-gtt" => res_g = Some(parse_kib(v)),
             _ if k.starts_with("drm-engine-") && !k.starts_with("drm-engine-capacity") => {
-                d.engine_ns += v.split_whitespace().next().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+                if let Some(ns) = v.split_whitespace().next().and_then(|x| x.parse::<u64>().ok()) {
+                    d.engine_ns = d.engine_ns.saturating_add(ns);
+                    d.has_engine = true;
+                }
             }
             _ => {}
         }
@@ -262,6 +266,68 @@ fn read_fdinfo(pid: u32, fd: &str) -> Option<DrmInfo> {
     Some(d)
 }
 
+/// Per-client engine counters for a single PCI device, as used by GPU monitors.
+/// Missing counters stay missing: some drivers expose memory but no engine time.
+pub type EngineSnapshot = HashMap<(u64, String), u64>;
+
+fn parse_engine_fdinfo(text: &str, pdev: &str, out: &mut EngineSnapshot) {
+    let mut client = None;
+    let mut device = None;
+    let mut engines = Vec::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let value = value.trim();
+        match key {
+            "drm-client-id" => client = value.parse::<u64>().ok(),
+            "drm-pdev" => device = Some(value),
+            "drm-engine-gfx" | "drm-engine-compute" => {
+                if let Some(ns) = value.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()) {
+                    engines.push((key.to_owned(), ns));
+                }
+            }
+            _ => {}
+        }
+    }
+    if device != Some(pdev) { return; }
+    if let Some(client) = client {
+        for (engine, ns) in engines {
+            // Shared/duplicated descriptors refer to the same DRM client.
+            out.entry((client, engine)).and_modify(|n| *n = (*n).max(ns)).or_insert(ns);
+        }
+    }
+}
+
+pub fn gpu_engine_snapshot(gpu: &Gpu) -> EngineSnapshot {
+    let mut out = EngineSnapshot::new();
+    let Ok(device) = fs::canonicalize(&gpu.dev) else { return out };
+    let Some(pdev) = device.file_name().and_then(|n| n.to_str()) else { return out };
+    let Ok(procs) = fs::read_dir("/proc") else { return out };
+    for proc in procs.flatten() {
+        let Some(pid) = proc.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        for fd in drm_fds(pid) {
+            if let Some(text) = read_str(Path::new(&format!("/proc/{pid}/fdinfo/{fd}"))) {
+                parse_engine_fdinfo(&text, pdev, &mut out);
+            }
+            if out.len() >= 4096 { return out; }
+        }
+    }
+    out
+}
+
+/// Aggregate client-engine busy time. Multiple engines can overlap, so this is
+/// an estimate, not hardware-wide occupancy or per-CU utilization.
+pub fn gpu_engine_percent(before: &EngineSnapshot, after: &EngineSnapshot, elapsed: f64) -> Option<f32> {
+    if elapsed <= 0.0 { return None; }
+    let mut any = false;
+    let mut ns = 0u64;
+    for (key, now) in after {
+        if let Some(old) = before.get(key) {
+            if now >= old { any = true; ns = ns.saturating_add(now - old); }
+        }
+    }
+    if any { Some((ns as f64 / (elapsed * 1e9) * 100.0).min(100.0) as f32) } else { None }
+}
+
 /// Sum DRM usage over unique clients of a process, given its DRM fds.
 fn drm_usage(pid: u32, fds: &[String]) -> DrmInfo {
     let mut seen: Vec<u64> = Vec::new();
@@ -270,7 +336,8 @@ fn drm_usage(pid: u32, fds: &[String]) -> DrmInfo {
         if let Some(d) = read_fdinfo(pid, fd) {
             if seen.contains(&d.client) { continue; }
             seen.push(d.client);
-            tot.engine_ns += d.engine_ns;
+            tot.engine_ns = tot.engine_ns.saturating_add(d.engine_ns);
+            tot.has_engine |= d.has_engine;
             tot.vram_kib += d.vram_kib;
             tot.gtt_kib += d.gtt_kib;
         }
@@ -345,7 +412,7 @@ pub fn procs_json(limit: usize, gap: Duration) -> String {
             (None, 0, 0)
         } else {
             let d1 = drm_usage(p.pid, &p.fds);
-            (Some(d1.engine_ns.saturating_sub(p.d0.engine_ns) as f64 / (el * 1e9) * 100.0), d1.vram_kib, d1.gtt_kib)
+            (if d1.has_engine && p.d0.has_engine { Some(d1.engine_ns.saturating_sub(p.d0.engine_ns) as f64 / (el * 1e9) * 100.0) } else { None }, d1.vram_kib, d1.gtt_kib)
         };
         rows.push(R { pid: p.pid, uid: p.uid, comm: b.comm, state: b.state, thr: b.thr, rss: b.rss_pages * page_kb, cpu, gpu, vram, gtt });
     }
@@ -396,4 +463,23 @@ pub fn procs_json(limit: usize, gap: Duration) -> String {
     }
     out.push_str("]}");
     out
+}
+
+#[cfg(test)]
+mod gpu_engine_tests {
+    use super::*;
+    #[test]
+    fn engine_counters_filter_device_and_deduplicate() {
+        let mut a = EngineSnapshot::new();
+        let sample = "drm-client-id: 5\ndrm-pdev: 0000:01:00.0\ndrm-engine-gfx: 100 ns\ndrm-engine-compute: 200 ns\n";
+        parse_engine_fdinfo(sample, "0000:01:00.0", &mut a);
+        parse_engine_fdinfo(sample, "0000:01:00.0", &mut a);
+        parse_engine_fdinfo(sample, "0000:02:00.0", &mut a);
+        assert_eq!(a.len(), 2);
+        let mut b = a.clone();
+        *b.get_mut(&(5, "drm-engine-compute".into())).unwrap() += 500_000_000;
+        assert_eq!(gpu_engine_percent(&a, &b, 1.0), Some(50.0));
+        assert_eq!(gpu_engine_percent(&EngineSnapshot::new(), &b, 1.0), None);
+        assert_eq!(gpu_engine_percent(&a, &b, 0.0), None);
+    }
 }
