@@ -57,7 +57,7 @@ usage: bc250mon [options]
   --peers LIST       nodes shown in the UI: name=http://ip:port,name2=http://ip2:port
                      (default: only this node)
   --data FILE        history file (default /var/lib/bc250mon/history.bin, 'none' = RAM only)
-  --days N           days of 1-minute history to keep (default 7; 20 bytes/minute)
+  --days N           days of 1-minute history to keep (default 7, max 30; 20 bytes/minute)
   --interval SEC     sample interval in seconds (default 2)
   --gpu-dev PATH     amdgpu sysfs device dir (default: auto-detect)"
     );
@@ -81,7 +81,7 @@ fn parse_args() -> Cfg {
             "--listen" => c.listen = v(),
             "--name" => c.name = v(),
             "--data" => { let d = v(); c.data = if d == "none" { None } else { Some(d.into()) } }
-            "--days" => c.days = v().parse().unwrap_or_else(|_| usage()),
+            "--days" => c.days = v().parse::<u32>().unwrap_or_else(|_| usage()).clamp(1, 30),
             "--interval" => c.interval = Duration::from_secs_f32(v().parse::<f32>().unwrap_or_else(|_| usage()).max(0.5)),
             "--gpu-dev" => c.gpu_dev = Some(v().into()),
             "--peers" => {
@@ -316,13 +316,16 @@ fn http_get(base: &str, path: &str) -> Option<Vec<u8>> {
     let _ = c.set_read_timeout(Some(Duration::from_secs(8)));
     let _ = c.set_write_timeout(Some(Duration::from_secs(3)));
     c.write_all(format!("GET {path} HTTP/1.0\r\nHost: {hostport}\r\nConnection: close\r\n\r\n").as_bytes()).ok()?;
+    const MAX_RESPONSE: u64 = 512 * 1024;
     let mut buf = Vec::with_capacity(16 * 1024);
-    c.take(8 << 20).read_to_end(&mut buf).ok()?;
+    c.take(MAX_RESPONSE + 1).read_to_end(&mut buf).ok()?;
+    if buf.len() as u64 > MAX_RESPONSE { return None; }
     let end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
     if !buf.starts_with(b"HTTP/1.1 200") && !buf.starts_with(b"HTTP/1.0 200") {
         return None;
     }
-    Some(buf.split_off(end + 4))
+    buf.drain(..end + 4);
+    Some(buf)
 }
 
 fn main() {
@@ -359,5 +362,31 @@ fn main() {
         if r.is_err() {
             ACTIVE.fetch_sub(1, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    fn server(size: usize) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = [0; 1024];
+            let _ = stream.read(&mut req);
+            let _ = stream.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+            let _ = stream.write_all(&vec![b'x'; size]);
+        });
+        (addr, thread)
+    }
+    #[test]
+    fn proxy_rejects_oversized_response() {
+        let (url, thread) = server(512 * 1024 + 1);
+        assert!(http_get(&url, "/api/now").is_none());
+        thread.join().unwrap();
+        let (url, thread) = server(123);
+        assert_eq!(http_get(&url, "/api/now").unwrap().len(), 123);
+        thread.join().unwrap();
     }
 }

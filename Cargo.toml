@@ -1,6 +1,6 @@
 [package]
 name = "bc250mon"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Ultra-light CPU/GPU/MEM/process monitor for AMD BC-250 nodes"
 

@@ -132,9 +132,15 @@ impl Store {
         }
         // Load old contents (any capacity) chronologically.
         let mut reuse = false;
-        if let Ok(mut f) = File::open(path) {
+        if let Ok(f) = File::open(path) {
             let mut data = Vec::new();
-            if f.read_to_end(&mut data).is_ok() && data.len() >= HDR && &data[0..4] == MAGIC
+            // Bound startup memory, and preserve an unexpectedly large file for inspection.
+            const MAX_FILE: u64 = 20 + 30 * 1440 * 20;
+            if f.take(MAX_FILE + 1).read_to_end(&mut data).is_err() || data.len() as u64 > MAX_FILE {
+                eprintln!("bc250mon: history file is unreadable or too large; persistence disabled");
+                return Store { ring, file: None };
+            }
+            if data.len() >= HDR && &data[0..4] == MAGIC
                 && u16::from_le_bytes([data[6], data[7]]) as usize == REC
             {
                 let ocap = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
@@ -318,6 +324,18 @@ mod tests {
         { let s = Store::open(Some(&p), 4); let v: Vec<u32> = s.ring.iter().map(|p| p.ts).collect(); assert_eq!(v, vec![180, 240, 300, 360]); }
         { let s = Store::open(Some(&p), 2); let v: Vec<u32> = s.ring.iter().map(|p| p.ts).collect(); assert_eq!(v, vec![300, 360]); }
         { let s = Store::open(Some(&p), 2); assert_eq!(s.ring.iter().count(), 2); }
+        let _ = std::fs::remove_file(&p);
+    }
+    #[test]
+    fn oversized_history_is_preserved() {
+        let p = std::env::temp_dir().join(format!("bc250mon-oversized-{}.bin", std::process::id()));
+        let f = File::create(&p).unwrap();
+        let size = 20 + 30 * 1440 * 20 + 1;
+        f.set_len(size).unwrap();
+        drop(f);
+        let store = Store::open(Some(&p), 4);
+        assert!(store.file.is_none());
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), size);
         let _ = std::fs::remove_file(&p);
     }
     #[test]

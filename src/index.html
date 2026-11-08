@@ -24,6 +24,8 @@ main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,560px),1
 .dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin:12px 0}
 .tile{border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.tile.clickable{cursor:pointer}.tile.clickable:focus-visible{outline:2px solid var(--cpu)}
+.detail{border:1px solid var(--line);border-radius:8px;padding:10px;margin:8px 0}.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px}.detail-item{background:var(--bg);border-radius:6px;padding:6px}.detail-item .bar{height:6px}.detail h3{font-size:13px;margin:0 0 8px}
 .tile .k{color:var(--mute);font-size:11px;display:flex;align-items:center;gap:6px}
 .tile .v{font-size:19px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tile .s{color:var(--mute);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -131,9 +133,9 @@ const nodes=[];
 function tile(k,color){return`<div class="tile"><div class="k">${color?`<span class="sw" style="background:var(${color})"></span>`:""}${k}</div><div class="v">–</div><div class="s">&nbsp;</div><div class="bar"><i style="width:0;background:var(${color||"--mute"})"></i></div></div>`}
 function addNode(name,url){
   const el=document.createElement("section");el.className="card";
-  el.innerHTML=`<div class="top"><span class="dot"></span><b>${esc(name)}</b><span class="mute url">${esc((url||location.host).replace(/^https?:\/\//,""))}</span><span class="sp"></span><span class="mute meta"></span></div>
+  el.innerHTML=`<div class="top"><span class="dot"></span><b>${esc(name)}</b><span class="mute url">${esc((url||location.host).replace(/^https?:\/\//,""))}</span><span class="sp"></span><span class="mute meta"></span><button class="btn ssh">SSH 접속</button></div>
   <div class="tiles">${tile("CPU","--cpu")}${tile("GPU","--gpu")}${tile("RAM","--ram")}${tile("GTT","--gtt")}${tile("VRAM","--vram")}${tile("Swap","--swap")}${tile("온도 / 전력","")}</div>
-  <div class="cores" title="코어별 CPU 사용률"></div>
+  <div class="cores" title="코어별 CPU 사용률"></div><div class="detail" hidden></div>
   <div class="lg"><span><i class="sw" style="background:var(--cpu)"></i>CPU</span><span><i class="sw" style="background:var(--gpu)"></i>GPU</span><span class="mute">점선 = 구간 최대</span></div>
   <div class="ch c1"></div>
   <div class="lg"><span><i class="sw" style="background:var(--ram)"></i>RAM</span><span><i class="sw" style="background:var(--gtt)"></i>GTT</span><span><i class="sw" style="background:var(--vram)"></i>VRAM</span><span><i class="sw" style="background:var(--swap)"></i>Swap</span></div>
@@ -148,6 +150,8 @@ function addNode(name,url){
     c1:chart($(".c1",el),[{k:"cpuMax",c:"--cpu",n:"CPU max",thin:1},{k:"gpuMax",c:"--gpu",n:"GPU max",thin:1},{k:"cpu",c:"--cpu",n:"CPU",fill:1},{k:"gpu",c:"--gpu",n:"GPU",fill:1}]),
     c2:chart($(".c2",el),[{k:"mem",c:"--ram",n:"RAM",fill:1},{k:"gtt",c:"--gtt",n:"GTT"},{k:"vram",c:"--vram",n:"VRAM"},{k:"swap",c:"--swap",n:"Swap"}]),
     procs:[],sort:"cpu",desc:true,filter:"",kthreads:false,show:25,paused:false,busy:false};
+  $(".ssh",el).onclick=()=>{try{const host=new URL(url||location.href,location.href).hostname;prompt("터미널에서 실행하세요. 사용자와 경유지는 환경에 맞게 수정하세요.","ssh "+(host!==location.hostname?"-J bc250@"+location.hostname+" ":"")+"bc250@"+host)}catch(e){alert("SSH 주소를 확인할 수 없습니다.")}};
+  for(const [i,kind] of [[0,"cpu"],[1,"gpu"]]){const t=n.tiles[i];t.classList.add("clickable");t.tabIndex=0;t.setAttribute("role","button");t.setAttribute("aria-expanded","false");const toggle=()=>{n.detail=n.detail===kind?null:kind;n.tiles[0].setAttribute("aria-expanded",n.detail==="cpu");n.tiles[1].setAttribute("aria-expanded",n.detail==="gpu");renderDetail(n)};t.onclick=toggle;t.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();toggle()}}}
   const cols=[["pid","PID"],["user","USER",1],["name","NAME",1],["cpu","CPU%"],["gpu","GPU%"],["rss","RSS"],["vram","VRAM"],["gtt","GTT"],["thr","THR"],["s","S"],["cmd","COMMAND",1]];
   const tr=$("thead tr",el);
   for(const[k,l,left]of cols){const th=document.createElement("th");th.textContent=l;th.dataset.k=k;if(left)th.className="l";th.onclick=()=>{if(n.sort===k)n.desc=!n.desc;else{n.sort=k;n.desc=!left}renderProcs(n)};tr.appendChild(th)}
@@ -156,6 +160,11 @@ function addNode(name,url){
   $(".pp",el).onclick=e=>{n.paused=!n.paused;e.target.textContent=n.paused?"재개":"일시정지";if(!n.paused)loadProcs(n)};
   $(".pm",el).onclick=()=>{n.show=n.show>25?25:1e9;renderProcs(n)};
   nodes.push(n);return n;
+}
+function renderDetail(n){
+  const el=$(".detail",n.el),d=n.now;el.hidden=!n.detail;if(!n.detail||!d)return;
+  if(n.detail==="cpu")el.innerHTML=`<h3>CPU 논리 코어별 사용률</h3><div class="detail-grid">${d.cores.map((v,i)=>`<div class="detail-item">CPU ${i} · ${v}%<div class="bar"><i style="width:${v}%;background:var(--cpu)"></i></div></div>`).join("")}</div>`;
+  else{const ps=n.procs.filter(p=>p.gpu!=null).sort((a,b)=>b.gpu-a.gpu).slice(0,10);el.innerHTML=`<h3>GPU 상세</h3><div class="detail-grid"><div class="detail-item">전체 사용률: ${d.gpu==null?"N/A":d.gpu.toFixed(1)+"%"}</div><div class="detail-item">클록: ${d.sclk?d.sclk+" MHz":"N/A"}</div><div class="detail-item">온도: ${d.gtemp==null?"N/A":d.gtemp+" °C"}</div><div class="detail-item">전력: ${d.pwr==null?"N/A":d.pwr.toFixed(1)+" W"}</div><div class="detail-item">VRAM: ${d.vram?fB(d.vram.used)+" / "+fB(d.vram.total):"N/A"}</div><div class="detail-item">GTT: ${d.gtt?fB(d.gtt.used)+" / "+fB(d.gtt.total):"N/A"}</div></div><p class="mute">GPU 개별 연산 코어 사용률은 드라이버에서 제공하지 않습니다. 아래는 프로세스별 GPU 엔진 사용률입니다.</p>${ps.length?ps.map(p=>`<div>${esc(p.name)} (PID ${p.pid}) · ${p.gpu.toFixed(1)}%</div>`).join(""):'<span class="mute">GPU 프로세스 정보 없음</span>'}`}
 }
 function setTile(t,v,s,pct){t.querySelector(".v").textContent=v;t.querySelector(".s").textContent=s||" ";t.querySelector(".bar i").style.width=(pct==null?0:Math.max(0,Math.min(100,pct)))+"%"}
 function setDot(n,ok,msg){const d=$(".dot",n.el);d.className="dot "+(ok?"ok":"bad");if(!ok)$(".meta",n.el).innerHTML=`<span class="err">${esc(msg||"연결 끊김")}</span>`}
@@ -174,6 +183,7 @@ async function loadNow(n){
     setTile(vram,d.vram?fB(d.vram.used):"N/A",d.vram?"/ "+fB(d.vram.total):"",d.vram&&d.vram.used/d.vram.total*100);
     setTile(tp,(d.gtemp!=null?d.gtemp+"°":"–")+(d.ctemp!=null?" / "+d.ctemp+"°":""),"GPU/CPU"+(d.pwr!=null?" · "+d.pwr.toFixed(0)+" W":""),null);
     $(".cores",n.el).innerHTML=d.cores.map((v,i)=>`<i title="cpu${i} ${v}%"><b style="height:${v}%"></b></i>`).join("");
+    renderDetail(n);
     $(".meta",n.el).textContent=`up ${fUp(d.uptime)} · agent ${fB(d.selfRss)}`;
   }catch(e){setDot(n,false)}
 }
@@ -186,7 +196,7 @@ async function loadHist(n){
 }
 async function loadProcs(n){
   if(n.busy||n.paused||document.hidden)return;n.busy=true;
-  try{const d=await get(n.url+(n.url?"/":"")+"api/procs?n=400",8000);n.procs=d.procs;n.total=d.total;renderProcs(n)}catch(e){$(".pcount",n.el).innerHTML='<span class="err">불러오기 실패</span>'}
+  try{const d=await get(n.url+(n.url?"/":"")+"api/procs?n=400",8000);n.procs=d.procs;n.total=d.total;renderProcs(n);renderDetail(n)}catch(e){$(".pcount",n.el).innerHTML='<span class="err">불러오기 실패</span>'}
   n.busy=false;
 }
 function renderProcs(n){
