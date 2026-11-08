@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BC-250 Monitor</title>
+<style>
+:root{--bg:#0f1115;--card:#171a21;--line:#262b35;--fg:#e6e8ec;--mute:#8b93a3;--cpu:#4c9aff;--gpu:#ff8a3d;--ram:#3ecf8e;--gtt:#b38cff;--vram:#ff6b9a;--swap:#e5c000;--warn:#ffb020;--bad:#ff5c5c;--ok:#3ecf8e}
+@media (prefers-color-scheme:light){:root{--bg:#f4f5f7;--card:#fff;--line:#e3e6eb;--fg:#1d2129;--mute:#687083;--cpu:#1f6feb;--gpu:#e8590c;--ram:#1a9e66;--gtt:#7b4fd6;--vram:#d6336c;--swap:#b08800;--warn:#d97706}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans KR",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
+h1{font-size:15px;margin:0;font-weight:650}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg button{background:none;border:0;color:var(--mute);padding:5px 10px;cursor:pointer;font:inherit}
+.seg button.on{background:var(--line);color:var(--fg)}
+.sp{flex:1}
+.mute{color:var(--mute)}
+main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,560px),1fr));gap:14px;padding:14px 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
+.top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.top b{font-size:15px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--mute);display:inline-block;align-self:center}
+.dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin:12px 0}
+.tile{border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.tile .k{color:var(--mute);font-size:11px;display:flex;align-items:center;gap:6px}
+.tile .v{font-size:19px;font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tile .s{color:var(--mute);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw{width:8px;height:8px;border-radius:2px;display:inline-block}
+.bar{height:4px;background:var(--line);border-radius:2px;margin-top:5px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:2px}
+.cores{display:flex;gap:2px;height:14px;align-items:flex-end;margin:-2px 0 10px}
+.cores i{flex:1;height:100%;background:var(--line);border-radius:1px;display:flex;align-items:flex-end}.cores i b{display:block;width:100%;background:var(--cpu);border-radius:1px}
+.ch{position:relative;height:150px;margin:4px 0 2px}
+.ch canvas{width:100%;height:100%;display:block}
+.ch .tip{position:absolute;top:4px;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 7px;font-size:11px;white-space:nowrap;display:none;font-variant-numeric:tabular-nums;z-index:2}
+.lg{display:flex;gap:12px;color:var(--mute);font-size:11px;margin-top:10px;flex-wrap:wrap}
+.lg span{display:inline-flex;align-items:center;gap:5px}
+.ph{display:flex;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap}
+.ph b{font-size:13px}
+input[type=search]{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit;min-width:0;width:150px}
+.btn{background:none;border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:4px 9px;cursor:pointer;font:inherit}
+.tw{overflow-x:auto;margin-top:6px}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:12px}
+th,td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mute);font-weight:500;cursor:pointer;user-select:none;position:sticky;top:0;background:var(--card)}
+th.on{color:var(--fg)}
+td.l,th.l{text-align:left}
+td.cmd{max-width:260px;overflow:hidden;text-overflow:ellipsis;color:var(--mute)}
+tr.hot td{background:color-mix(in srgb,var(--gpu) 8%,transparent)}
+.err{color:var(--bad)}
+.disks{display:grid;gap:6px;margin-top:6px}
+.dk{display:grid;grid-template-columns:minmax(80px,1.2fr) 3fr auto;gap:10px;align-items:center;font-size:12px;font-variant-numeric:tabular-nums}
+.dk .bar{margin:0;height:7px}.dk .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dk.w .bar i{background:var(--warn)!important}.dk.c .bar i{background:var(--bad)!important}.dk.c .u{color:var(--bad)}
+footer{padding:6px 16px 18px;color:var(--mute);font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>BC-250 Monitor</h1>
+  <div class="seg" id="rng"></div>
+  <span class="sp"></span>
+  <span class="mute" id="clock"></span>
+</header>
+<main id="nodes"></main>
+<footer id="foot"></footer>
+<script>
+"use strict";
+const RANGES=[["15m",900],["1h",3600],["6h",21600],["24h",86400],["7d",604800]];
+const $=(s,r=document)=>r.querySelector(s);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pad=n=>String(n).padStart(2,"0");
+function fB(b){if(b==null)return"–";const u=["B","KiB","MiB","GiB","TiB"];let i=0;while(b>=1024&&i<4){b/=1024;i++}return(b>=100||i<2?b.toFixed(0):b.toFixed(1))+" "+u[i]}
+function fKiB(k){return k?fB(k*1024):"–"}
+function fUp(s){const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+"d ":"")+h+"h "+m+"m"}
+function fT(t,long){const d=new Date(t*1000);return(long?(d.getMonth()+1)+"/"+d.getDate()+" ":"")+pad(d.getHours())+":"+pad(d.getMinutes())}
+async function get(url,ms=4000){const c=new AbortController();const id=setTimeout(()=>c.abort(),ms);try{const r=await fetch(url,{signal:c.signal,cache:"no-store"});if(!r.ok)throw new Error(r.status);return await r.json()}finally{clearTimeout(id)}}
+
+let range=3600;try{const r=+localStorage.getItem("range");if(RANGES.some(x=>x[1]===r))range=r}catch(e){}
+const rngEl=$("#rng");
+for(const[l,s]of RANGES){const b=document.createElement("button");b.textContent=l;b.dataset.s=s;if(s===range)b.classList.add("on");b.onclick=()=>{range=s;try{localStorage.setItem("range",s)}catch(e){}rngEl.querySelectorAll("button").forEach(x=>x.classList.toggle("on",+x.dataset.s===s));nodes.forEach(n=>loadHist(n))};rngEl.appendChild(b)}
+
+/* ---------- chart ---------- */
+function chart(wrap,series){
+  const cv=document.createElement("canvas"),tip=document.createElement("div");tip.className="tip";
+  wrap.append(cv,tip);
+  const c={cv,tip,series,h:null,from:0,to:0,hover:null};
+  cv.addEventListener("mousemove",e=>{c.hover=e.offsetX;drawChart(c)});
+  cv.addEventListener("mouseleave",()=>{c.hover=null;drawChart(c)});
+  return c;
+}
+function drawChart(c){
+  const{cv,h}=c,dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+  if(!W)return;
+  cv.width=W*dpr;cv.height=H*dpr;const x=cv.getContext("2d");x.scale(dpr,dpr);
+  const L=30,R=6,T=6,B=18,pw=W-L-R,ph=H-T-B,line=css("--line"),mute=css("--mute");
+  const X=t=>L+(t-c.from)/(c.to-c.from)*pw,Y=v=>T+ph-(Math.min(v,100)/100)*ph;
+  x.font="10px system-ui,sans-serif";x.fillStyle=mute;x.strokeStyle=line;x.lineWidth=1;
+  for(const v of[0,25,50,75,100]){const y=Math.round(Y(v))+.5;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.textAlign="right";x.fillText(v,L-5,y+3)}
+  const long=c.to-c.from>86400*1.5;x.textAlign="center";
+  for(let i=0;i<=4;i++){const t=c.from+(c.to-c.from)*i/4;x.fillText(fT(t,long),Math.min(Math.max(X(t),L+16),W-R-16),H-4)}
+  if(!h||!h.t.length){x.textAlign="center";x.fillText("데이터 없음",L+pw/2,T+ph/2);c.tip.style.display="none";return}
+  const gap=Math.max(h.step*2.5,130);
+  for(const s of c.series){
+    const d=h[s.k];if(!d)continue;const col=css(s.c);
+    x.strokeStyle=col;x.lineWidth=s.thin?1:1.6;x.globalAlpha=s.thin?.45:1;x.setLineDash(s.thin?[3,3]:[]);
+    x.beginPath();let pen=false,run=[];
+    const flush=()=>{if(run.length>1&&s.fill){x.save();x.globalAlpha=.10;x.fillStyle=col;x.beginPath();x.moveTo(run[0][0],T+ph);for(const p of run)x.lineTo(p[0],p[1]);x.lineTo(run[run.length-1][0],T+ph);x.fill();x.restore()}run=[]};
+    for(let i=0;i<h.t.length;i++){
+      const v=d[i];if(v==null||(i&&h.t[i]-h.t[i-1]>gap)){pen=false;flush();if(v==null)continue}
+      const px=X(h.t[i]),py=Y(v);if(pen)x.lineTo(px,py);else x.moveTo(px,py);pen=true;run.push([px,py]);
+    }
+    x.stroke();flush();x.globalAlpha=1;x.setLineDash([]);
+  }
+  if(c.hover!=null&&c.hover>=L){
+    const t=c.from+(c.hover-L)/pw*(c.to-c.from);let bi=0,bd=1e18;
+    for(let i=0;i<h.t.length;i++){const d=Math.abs(h.t[i]-t);if(d<bd){bd=d;bi=i}}
+    if(bd<=gap){const px=X(h.t[bi]);x.strokeStyle=mute;x.beginPath();x.moveTo(px+.5,T);x.lineTo(px+.5,T+ph);x.stroke();
+      let s=`<div class="mute">${fT(h.t[bi],true)}${h.step>=60?" ("+(h.step>=3600?(h.step/3600).toFixed(1).replace(/\.0$/,"")+"h":Math.round(h.step/60)+"m")+" 평균)":""}</div>`;
+      for(const se of c.series){const v=h[se.k]&&h[se.k][bi];if(v!=null)s+=`<div><span class="sw" style="background:var(${se.c})"></span> ${se.n} ${v.toFixed(1)}%</div>`}
+      c.tip.innerHTML=s;c.tip.style.display="block";const tw=c.tip.offsetWidth;c.tip.style.left=(px+10+tw>W?px-10-tw:px+10)+"px";
+    }else c.tip.style.display="none";
+  }else c.tip.style.display="none";
+}
+
+/* ---------- node card ---------- */
+const nodes=[];
+function tile(k,color){return`<div class="tile"><div class="k">${color?`<span class="sw" style="background:var(${color})"></span>`:""}${k}</div><div class="v">–</div><div class="s">&nbsp;</div><div class="bar"><i style="width:0;background:var(${color||"--mute"})"></i></div></div>`}
+function addNode(name,url){
+  const el=document.createElement("section");el.className="card";
+  el.innerHTML=`<div class="top"><span class="dot"></span><b>${esc(name)}</b><span class="mute url">${esc(url||location.host)}</span><span class="sp"></span><span class="mute meta"></span></div>
+  <div class="tiles">${tile("CPU","--cpu")}${tile("GPU","--gpu")}${tile("RAM","--ram")}${tile("GTT","--gtt")}${tile("VRAM","--vram")}${tile("Swap","--swap")}${tile("온도 / 전력","")}</div>
+  <div class="cores" title="코어별 CPU 사용률"></div>
+  <div class="lg"><span><i class="sw" style="background:var(--cpu)"></i>CPU</span><span><i class="sw" style="background:var(--gpu)"></i>GPU</span><span class="mute">점선 = 구간 최대</span></div>
+  <div class="ch c1"></div>
+  <div class="lg"><span><i class="sw" style="background:var(--ram)"></i>RAM</span><span><i class="sw" style="background:var(--gtt)"></i>GTT</span><span><i class="sw" style="background:var(--vram)"></i>VRAM</span><span><i class="sw" style="background:var(--swap)"></i>Swap</span></div>
+  <div class="ch c2"></div>
+  <div class="ph"><b>저장공간</b></div>
+  <div class="disks"></div>
+  <div class="ph"><b>프로세스</b><span class="mute pcount"></span><span class="sp"></span><label class="mute"><input type="checkbox" class="pk"> 커널 스레드</label><input type="search" placeholder="필터 (이름/명령/사용자)" class="pf"><button class="btn pp">일시정지</button></div>
+  <div class="tw"><table><thead><tr></tr></thead><tbody></tbody></table></div>
+  <div style="margin-top:6px"><button class="btn pm">더 보기</button></div>`;
+  $("#nodes").appendChild(el);
+  const n={name,url:url||"",el,tiles:[...el.querySelectorAll(".tile")],
+    c1:chart($(".c1",el),[{k:"cpuMax",c:"--cpu",n:"CPU max",thin:1},{k:"gpuMax",c:"--gpu",n:"GPU max",thin:1},{k:"cpu",c:"--cpu",n:"CPU",fill:1},{k:"gpu",c:"--gpu",n:"GPU",fill:1}]),
+    c2:chart($(".c2",el),[{k:"mem",c:"--ram",n:"RAM",fill:1},{k:"gtt",c:"--gtt",n:"GTT"},{k:"vram",c:"--vram",n:"VRAM"},{k:"swap",c:"--swap",n:"Swap"}]),
+    procs:[],sort:"cpu",desc:true,filter:"",kthreads:false,show:25,paused:false,busy:false};
+  const cols=[["pid","PID"],["user","USER",1],["name","NAME",1],["cpu","CPU%"],["gpu","GPU%"],["rss","RSS"],["vram","VRAM"],["gtt","GTT"],["thr","THR"],["s","S"],["cmd","COMMAND",1]];
+  const tr=$("thead tr",el);
+  for(const[k,l,left]of cols){const th=document.createElement("th");th.textContent=l;th.dataset.k=k;if(left)th.className="l";th.onclick=()=>{if(n.sort===k)n.desc=!n.desc;else{n.sort=k;n.desc=!left}renderProcs(n)};tr.appendChild(th)}
+  $(".pk",el).onchange=e=>{n.kthreads=e.target.checked;renderProcs(n)};
+  $(".pf",el).oninput=e=>{n.filter=e.target.value.toLowerCase();renderProcs(n)};
+  $(".pp",el).onclick=e=>{n.paused=!n.paused;e.target.textContent=n.paused?"재개":"일시정지";if(!n.paused)loadProcs(n)};
+  $(".pm",el).onclick=()=>{n.show=n.show>25?25:1e9;renderProcs(n)};
+  nodes.push(n);return n;
+}
+function setTile(t,v,s,pct){t.querySelector(".v").textContent=v;t.querySelector(".s").textContent=s||" ";t.querySelector(".bar i").style.width=(pct==null?0:Math.max(0,Math.min(100,pct)))+"%"}
+function setDot(n,ok,msg){const d=$(".dot",n.el);d.className="dot "+(ok?"ok":"bad");if(!ok)$(".meta",n.el).innerHTML=`<span class="err">${esc(msg||"연결 끊김")}</span>`}
+
+async function loadNow(n){
+  try{
+    const d=await get(n.url+"/api/now");n.now=d;setDot(n,true);
+    const[cpu,gpu,ram,gtt,vram,sw,tp]=n.tiles;
+    setTile(cpu,d.cpu.toFixed(0)+"%",`load ${d.load[0].toFixed(2)} / ${d.load[1].toFixed(2)}`,d.cpu);
+    setTile(gpu,d.gpu==null?"N/A":d.gpu.toFixed(0)+"%",d.sclk?d.sclk+" MHz":"",d.gpu);
+    const used=d.mem.total-d.mem.avail;
+    setTile(ram,fB(used),`/ ${fB(d.mem.total)}`,used/d.mem.total*100);
+    const su=d.mem.swapTotal-d.mem.swapFree;setTile(sw,d.mem.swapTotal?fB(su):"없음",d.mem.swapTotal?"/ "+fB(d.mem.swapTotal):"swap 미설정",d.mem.swapTotal?su/d.mem.swapTotal*100:null);
+    $(".disks",n.el).innerHTML=(d.disks||[]).map(k=>{const p=k.used/k.total*100,cl=p>=95?"c":p>=85?"w":"";return`<div class="dk ${cl}" title="${esc(k.dev)} (${esc(k.fs)})"><span class="n">${esc(k.mnt)}</span><div class="bar"><i style="width:${p.toFixed(1)}%;background:var(--ram)"></i></div><span class="u">${fB(k.used)} / ${fB(k.total)} · ${p.toFixed(0)}%</span></div>`}).join("")||'<span class="mute">–</span>';
+    setTile(gtt,d.gtt?fB(d.gtt.used):"N/A",d.gtt?"/ "+fB(d.gtt.total):"",d.gtt&&d.gtt.used/d.gtt.total*100);
+    setTile(vram,d.vram?fB(d.vram.used):"N/A",d.vram?"/ "+fB(d.vram.total):"",d.vram&&d.vram.used/d.vram.total*100);
+    setTile(tp,(d.gtemp!=null?d.gtemp+"°":"–")+(d.ctemp!=null?" / "+d.ctemp+"°":""),"GPU/CPU"+(d.pwr!=null?" · "+d.pwr.toFixed(0)+" W":""),null);
+    $(".cores",n.el).innerHTML=d.cores.map((v,i)=>`<i title="cpu${i} ${v}%"><b style="height:${v}%"></b></i>`).join("");
+    $(".meta",n.el).textContent=`up ${fUp(d.uptime)} · agent ${fB(d.selfRss)}`;
+  }catch(e){setDot(n,false)}
+}
+async function loadHist(n){
+  try{
+    const h=await get(`${n.url}/api/hist?sec=${range}&n=${Math.min(900,Math.max(200,Math.round(n.el.clientWidth)))}`,8000);
+    const to=Date.now()/1000,from=to-range;
+    for(const c of[n.c1,n.c2]){c.h=h;c.from=from;c.to=to;drawChart(c)}
+  }catch(e){}
+}
+async function loadProcs(n){
+  if(n.busy||n.paused||document.hidden)return;n.busy=true;
+  try{const d=await get(n.url+"/api/procs?n=400",8000);n.procs=d.procs;n.total=d.total;renderProcs(n)}catch(e){$(".pcount",n.el).innerHTML='<span class="err">불러오기 실패</span>'}
+  n.busy=false;
+}
+function renderProcs(n){
+  const k=n.sort,dir=n.desc?-1:1;
+  let ps=n.kthreads?n.procs:n.procs.filter(p=>p.cmd||p.rss);
+  if(n.filter)ps=ps.filter(p=>(p.name+" "+p.cmd+" "+p.user).toLowerCase().includes(n.filter));
+  ps=ps.slice().sort((a,b)=>{const x=a[k]??-1,y=b[k]??-1;return(typeof x==="string"?x.localeCompare(y):x-y)*dir});
+  n.el.querySelectorAll("th").forEach(th=>{th.classList.toggle("on",th.dataset.k===k)});
+  $(".pcount",n.el).textContent=`${ps.length} / ${n.total||0}`;
+  $("tbody",n.el).innerHTML=ps.slice(0,n.show).map(p=>`<tr class="${p.gpu!=null?"hot":""}"><td>${p.pid}</td><td class="l">${esc(p.user)}</td><td class="l">${esc(p.name)}</td><td>${p.cpu.toFixed(1)}</td><td>${p.gpu==null?"":p.gpu.toFixed(1)}</td><td>${fKiB(p.rss)}</td><td>${p.vram?fKiB(p.vram):""}</td><td>${p.gtt?fKiB(p.gtt):""}</td><td>${p.thr}</td><td>${esc(p.s)}</td><td class="l cmd" title="${esc(p.cmd)}">${esc(p.cmd||"["+p.name+"]")}</td></tr>`).join("");
+  const pm=$(".pm",n.el);pm.style.display=ps.length>25?"":"none";pm.textContent=n.show>25?"접기":`더 보기 (${ps.length})`;
+}
+
+/* ---------- boot ---------- */
+(async()=>{
+  let info;try{info=await get("api/info")}catch(e){info={name:location.host,peers:[]}}
+  const peers=info.peers&&info.peers.length?info.peers:[{name:info.name,url:""}];
+  for(const p of peers)addNode(p.name,p.url);
+  $("#foot").textContent=`bc250mon ${info.version||""} · 기록: 2초 간격 1시간 + 1분 평균 ${info.days||"?"}일 · GTT = GPU가 시스템 RAM에서 할당한 메모리`;
+  const tickNow=()=>nodes.forEach(loadNow);
+  const tickHist=()=>nodes.forEach(loadHist);
+  const tickProcs=()=>nodes.forEach(loadProcs);
+  tickNow();tickHist();tickProcs();
+  setInterval(tickNow,(info.interval||2)*1000);
+  let last=0;setInterval(()=>{const iv=range<=3600?5000:range<=21600?30000:60000;if(Date.now()-last>=iv){last=Date.now();tickHist()}},1000);
+  setInterval(tickProcs,5000);
+  setInterval(()=>{$("#clock").textContent=new Date().toLocaleTimeString()},1000);
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden){tickNow();tickHist();tickProcs()}});
+  let rt;addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(()=>nodes.forEach(n=>{drawChart(n.c1);drawChart(n.c2)}),150)});
+})();
+</script>
+</body>
+</html>

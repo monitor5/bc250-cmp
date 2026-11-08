@@ -1,0 +1,10 @@
+# /etc/default/bc250mon
+# Bind ONLY to the VPN interface address of this node.
+LISTEN=10.8.0.11:9250
+NAME=bc250-1
+# Both nodes, as seen from the browser (VPN addresses). Same value on both nodes.
+PEERS=bc250-1=http://10.8.0.11:9250,bc250-2=http://10.8.0.12:9250
+# Days of 1-minute history kept on disk and in RAM (7 days = ~200 KB)
+DAYS=7
+# Seconds between samples (GPU is sub-sampled 4x inside this window)
+INTERVAL=2

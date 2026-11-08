@@ -1,0 +1,36 @@
+[Unit]
+Description=bc250mon - lightweight CPU/GPU/MEM monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Edit /etc/default/bc250mon (LISTEN, NAME, PEERS, ...) and restart.
+EnvironmentFile=-/etc/default/bc250mon
+ExecStart=/usr/local/bin/bc250mon --listen ${LISTEN} --name ${NAME} --peers ${PEERS} --days ${DAYS} --interval ${INTERVAL} --data /var/lib/bc250mon/history.bin
+Restart=always
+RestartSec=3
+StateDirectory=bc250mon
+# Runs as root only to read other users' /proc/<pid>/fd (per-process GPU usage).
+# Everything else is locked down; the hard memory cap guarantees it can never
+# take RAM away from the inference workload.
+MemoryMax=16M
+MemorySwapMax=0
+CPUQuota=10%
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
